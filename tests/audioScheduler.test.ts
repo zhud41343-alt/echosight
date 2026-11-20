@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { AudioSpeechScheduler, SpeechBackend } from '../src/engine/audioScheduler';
 
-function createMockBackend() {
+function createMockBackendWithLateCallbacks() {
   const spoken: string[] = [];
+  const callbacks: Array<() => void> = [];
   let speaking = false;
-  let endCb: (() => void) | null = null;
   let cancelCount = 0;
 
   const backend: SpeechBackend = {
@@ -13,15 +13,14 @@ function createMockBackend() {
     cancel: () => {
       cancelCount++;
       speaking = false;
-      endCb = null;
     },
-    speak: (text, _rate, onEnd) => {
+    speak: (text, _rate, onDone) => {
       spoken.push(text);
       speaking = true;
-      endCb = () => {
+      callbacks.push(() => {
         speaking = false;
-        onEnd();
-      };
+        onDone();
+      });
     },
   };
 
@@ -29,55 +28,87 @@ function createMockBackend() {
     backend,
     spoken,
     getCancelCount: () => cancelCount,
-    finishCurrent: () => endCb?.(),
+    triggerDoneForIndex: (idx: number) => callbacks[idx]?.(),
   };
 }
 
-describe('Unified AudioSpeechScheduler priority & cooldown guarantees', () => {
-  it('blocks AMBIENT speech from interrupting an active EMERGENCY alert', () => {
-    const mock = createMockBackend();
-    const sched = new AudioSpeechScheduler(mock.backend);
+describe('Unified AudioSpeechScheduler V3 (race-free playbackId + unified clock + spatial coordination)', () => {
+  it('P0-3: late onend/onerror callback from a cancelled utterance NEVER clobbers newer EMERGENCY speech', () => {
+    let clockNow = 1000;
+    const mock = createMockBackendWithLateCallbacks();
+    const sched = new AudioSpeechScheduler(mock.backend, () => clockNow);
 
-    const r1 = sched.schedule({ text: '紧急提示', priority: 'EMERGENCY', now: 1000 });
+    // 1. Start AMBIENT utterance (index 0)
+    const r1 = sched.schedule({ text: '普通环境播报', priority: 'AMBIENT' });
     expect(r1.accepted).toBe(true);
+    expect(sched.getCurrentPriority()).toBe('AMBIENT');
 
-    const r2 = sched.schedule({ text: '普通环境播报', priority: 'AMBIENT', now: 1200 });
-    expect(r2.accepted).toBe(false);
-    expect(r2.reason).toBe('dropped_lower_priority');
-    expect(mock.spoken).toEqual(['紧急提示']);
-  });
-
-  it('allows EMERGENCY to preempt active AMBIENT narration', () => {
-    const mock = createMockBackend();
-    const sched = new AudioSpeechScheduler(mock.backend);
-
-    sched.schedule({ text: '普通环境播报', priority: 'AMBIENT', now: 1000 });
-    const r2 = sched.schedule({ text: '摄像头已断开', priority: 'EMERGENCY', now: 1500 });
+    // 2. EMERGENCY preempts AMBIENT (index 1)
+    clockNow = 1200;
+    const r2 = sched.schedule({ text: '摄像头已断开', priority: 'EMERGENCY' });
     expect(r2.accepted).toBe(true);
     expect(r2.reason).toBe('preempted_and_spoken');
-    expect(mock.getCancelCount()).toBe(1);
+    expect(sched.getCurrentPriority()).toBe('EMERGENCY');
+
+    // 3. Browser fires LATE onend/onerror for the cancelled AMBIENT utterance (index 0)!
+    clockNow = 1300;
+    mock.triggerDoneForIndex(0);
+
+    // State MUST STILL belong to the active EMERGENCY utterance!
+    expect(sched.getCurrentPriority()).toBe('EMERGENCY');
+
+    // A new AMBIENT message must still be blocked by the active EMERGENCY utterance
+    clockNow = 5000;
+    const r3 = sched.schedule({ text: '另一条普通播报', priority: 'AMBIENT' });
+    expect(r3.accepted).toBe(false);
+    expect(r3.reason).toBe('dropped_lower_priority');
+  });
+
+  it('blocks continuous spatial scan sound during active EMERGENCY/USER_QUERY speech and when muted', () => {
+    let clockNow = 2000;
+    const mock = createMockBackendWithLateCallbacks();
+    const sched = new AudioSpeechScheduler(mock.backend, () => clockNow);
+
+    expect(sched.shouldAllowSpatialCue('continuous')).toBe(true);
+
+    sched.schedule({ text: '紧急提醒', priority: 'EMERGENCY' });
+    clockNow = 2200;
+    expect(sched.shouldAllowSpatialCue('continuous')).toBe(false);
+
+    mock.triggerDoneForIndex(0);
+    clockNow = 2400;
+    expect(sched.shouldAllowSpatialCue('continuous')).toBe(true);
+
+    sched.setMuted(true);
+    clockNow = 3000;
+    expect(sched.shouldAllowSpatialCue('continuous')).toBe(false);
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(false);
+
+    sched.setMuted(false);
+    clockNow = 4000;
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(true);
   });
 
   it('enforces deduplication cooldown on repeated ambient announcements', () => {
-    const mock = createMockBackend();
-    const sched = new AudioSpeechScheduler(mock.backend);
+    let clockNow = 1000;
+    const mock = createMockBackendWithLateCallbacks();
+    const sched = new AudioSpeechScheduler(mock.backend, () => clockNow);
 
     const r1 = sched.schedule({
       text: '左前方检测到椅子',
       priority: 'AMBIENT',
       dedupeKey: 'chair-left',
       cooldownMs: 8000,
-      now: 1000,
     });
     expect(r1.accepted).toBe(true);
-    mock.finishCurrent();
+    mock.triggerDoneForIndex(0);
 
+    clockNow = 5000;
     const r2 = sched.schedule({
       text: '左前方检测到椅子',
       priority: 'AMBIENT',
       dedupeKey: 'chair-left',
       cooldownMs: 8000,
-      now: 5000,
     });
     expect(r2.accepted).toBe(false);
     expect(r2.reason).toBe('dropped_cooldown');

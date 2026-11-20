@@ -2,58 +2,106 @@ import { describe, it, expect } from 'vitest';
 import {
   createInitialSignals,
   evaluateEchoSafe,
-  SingleFlightRunner,
+  isPerceptionPacketUsable,
+  PerceptionPacket,
   RuntimeMetricsTracker,
+  SessionGuard,
+  SingleFlightRunner,
 } from '../src/engine/echoSafe';
 
-describe('EchoSafe unified reliability state machine', () => {
+describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket', () => {
   const T = 50_000;
 
   it('starts in IDLE and cannot trust live perception', () => {
     const snap = evaluateEchoSafe(createInitialSignals(), T);
     expect(snap.state).toBe('IDLE');
     expect(snap.canTrustLivePerception).toBe(false);
-    expect(snap.dataSource).toBe('none');
+    expect(snap.dataSource).toBe('UNAVAILABLE');
   });
 
-  it('enters DEMO and strictly isolates demo_preset from live perception', () => {
+  it('enters DEMO and strictly isolates SIMULATED_SCENE from live perception', () => {
     const snap = evaluateEchoSafe({ ...createInitialSignals(), isDemoMode: true }, T);
     expect(snap.state).toBe('DEMO');
-    expect(snap.dataSource).toBe('demo_preset');
+    expect(snap.dataSource).toBe('SIMULATED_SCENE');
     expect(snap.canTrustLivePerception).toBe(false);
   });
 
-  it('enters UNAVAILABLE when camera permission is denied', () => {
+  it('P0-1: NEVER enters ACTIVE when lastFrameAt is null (stays INITIALIZING within grace, then UNAVAILABLE)', () => {
+    const waiting = evaluateEchoSafe(
+      {
+        ...createInitialSignals(),
+        requestedLive: true,
+        sessionStartedAt: T - 1000,
+        cameraPermission: 'granted',
+        cameraTrackLive: true,
+        lastFrameAt: null,
+        modelState: 'ready',
+        audioState: 'running',
+      },
+      T
+    );
+    expect(waiting.state).toBe('INITIALIZING');
+    expect(waiting.canTrustLivePerception).toBe(false);
+
+    const timedOut = evaluateEchoSafe(
+      {
+        ...createInitialSignals(),
+        requestedLive: true,
+        sessionStartedAt: T - 6000,
+        cameraPermission: 'granted',
+        cameraTrackLive: true,
+        lastFrameAt: null,
+        modelState: 'ready',
+        audioState: 'running',
+      },
+      T
+    );
+    expect(timedOut.state).toBe('UNAVAILABLE');
+    expect(timedOut.canTrustLivePerception).toBe(false);
+  });
+
+  it('P0-1: NEVER enters ACTIVE when model is ready but lastInferenceAt is null (enters DEGRADED)', () => {
     const snap = evaluateEchoSafe(
       {
         ...createInitialSignals(),
         requestedLive: true,
-        cameraPermission: 'denied',
+        sessionStartedAt: T - 1500,
+        cameraPermission: 'granted',
+        cameraTrackLive: true,
+        lastFrameAt: T - 100,
         modelState: 'ready',
+        lastInferenceAt: null,
         audioState: 'running',
       },
       T
     );
-    expect(snap.state).toBe('UNAVAILABLE');
+    expect(snap.state).toBe('DEGRADED');
+    expect(snap.inferenceFresh).toBe(false);
     expect(snap.canTrustLivePerception).toBe(false);
-    expect(snap.dataSource).toBe('none');
   });
 
-  it('enters UNAVAILABLE when camera track stops or video frames go stale', () => {
-    const disconnected = evaluateEchoSafe(
-      {
-        ...createInitialSignals(),
-        requestedLive: true,
-        cameraPermission: 'granted',
-        cameraTrackLive: false,
-        modelState: 'ready',
-        audioState: 'running',
-      },
-      T
-    );
-    expect(disconnected.state).toBe('UNAVAILABLE');
+  it('P0-1: enters UNAVAILABLE when camera permission denied, track ended, video frozen, or page hidden', () => {
+    expect(
+      evaluateEchoSafe(
+        { ...createInitialSignals(), requestedLive: true, cameraPermission: 'denied' },
+        T
+      ).state
+    ).toBe('UNAVAILABLE');
 
-    const stale = evaluateEchoSafe(
+    expect(
+      evaluateEchoSafe(
+        {
+          ...createInitialSignals(),
+          requestedLive: true,
+          cameraPermission: 'granted',
+          cameraTrackLive: false,
+        },
+        T
+      ).state
+    ).toBe('UNAVAILABLE');
+
+    // Frozen video (no real frame advance for 3.5s)
+    const frozen = evaluateEchoSafe(
       {
         ...createInitialSignals(),
         requestedLive: true,
@@ -61,68 +109,89 @@ describe('EchoSafe unified reliability state machine', () => {
         cameraTrackLive: true,
         lastFrameAt: T - 3500,
         modelState: 'ready',
+        lastInferenceAt: T - 3500,
         audioState: 'running',
       },
       T
     );
-    expect(stale.state).toBe('UNAVAILABLE');
-    expect(stale.frameStale).toBe(true);
+    expect(frozen.state).toBe('UNAVAILABLE');
+    expect(frozen.frameFresh).toBe(false);
+
+    // Page hidden
+    expect(
+      evaluateEchoSafe(
+        {
+          ...createInitialSignals(),
+          requestedLive: true,
+          cameraPermission: 'granted',
+          cameraTrackLive: true,
+          lastFrameAt: T - 100,
+          modelState: 'ready',
+          lastInferenceAt: T - 200,
+          audioState: 'running',
+          pageHidden: true,
+        },
+        T
+      ).state
+    ).toBe('UNAVAILABLE');
   });
 
-  it('enters UNAVAILABLE when page is hidden in background', () => {
+  it('enters ACTIVE only when camera, real frame, model, inference, visibility, and audio are all fresh', () => {
     const snap = evaluateEchoSafe(
       {
         ...createInitialSignals(),
         requestedLive: true,
-        cameraPermission: 'granted',
-        cameraTrackLive: true,
-        lastFrameAt: T - 100,
-        modelState: 'ready',
-        audioState: 'running',
-        pageHidden: true,
-      },
-      T
-    );
-    expect(snap.state).toBe('UNAVAILABLE');
-    expect(snap.canTrustLivePerception).toBe(false);
-  });
-
-  it('enters DEGRADED when model fails to load (never pretends healthy)', () => {
-    const snap = evaluateEchoSafe(
-      {
-        ...createInitialSignals(),
-        requestedLive: true,
-        cameraPermission: 'granted',
-        cameraTrackLive: true,
-        lastFrameAt: T - 100,
-        modelState: 'failed',
-        audioState: 'running',
-      },
-      T
-    );
-    expect(snap.state).toBe('DEGRADED');
-    expect(snap.canTrustLivePerception).toBe(false);
-  });
-
-  it('enters ACTIVE only when camera, frames, model, page visibility, and audio are all healthy', () => {
-    const snap = evaluateEchoSafe(
-      {
-        ...createInitialSignals(),
-        requestedLive: true,
+        sessionStartedAt: T - 5000,
         cameraPermission: 'granted',
         cameraTrackLive: true,
         lastFrameAt: T - 120,
         modelState: 'ready',
         lastInferenceAt: T - 400,
-        lastInferenceDurationMs: 140,
+        lastInferenceDurationMs: 95,
         audioState: 'running',
         pageHidden: false,
       },
       T
     );
     expect(snap.state).toBe('ACTIVE');
+    expect(snap.frameFresh).toBe(true);
+    expect(snap.inferenceFresh).toBe(true);
     expect(snap.canTrustLivePerception).toBe(true);
-    expect(snap.dataSource).toBe('live_camera');
+    expect(snap.dataSource).toBe('REAL_CAMERA');
+  });
+
+  it('P0-2: SessionGuard invalidates stale async results across start -> stop -> restart cycles', () => {
+    const guard = new SessionGuard();
+    const s1 = guard.begin();
+    expect(guard.isValid(s1)).toBe(true);
+
+    // User stops while inference from s1 is still in flight
+    guard.invalidate();
+    expect(guard.isValid(s1)).toBe(false);
+    expect(guard.isActive).toBe(false);
+
+    // Rapid restart creates s2; late results from s1 remain rejected
+    const s2 = guard.begin();
+    expect(s2).toBeGreaterThan(s1);
+    expect(guard.isValid(s1)).toBe(false);
+    expect(guard.isValid(s2)).toBe(true);
+  });
+
+  it('P0-4: isPerceptionPacketUsable rejects simulated, expired, wrong-session, and non-ACTIVE packets', () => {
+    const base: PerceptionPacket<string> = {
+      dataSource: 'REAL_CAMERA',
+      sessionId: 3,
+      capturedAt: T - 300,
+      inferredAt: T - 200,
+      expiresAt: T + 3000,
+      safeState: 'ACTIVE',
+      detections: ['chair'],
+    };
+    expect(isPerceptionPacketUsable(base, 3, T)).toBe(true);
+    expect(isPerceptionPacketUsable(base, 4, T)).toBe(false); // stale session
+    expect(isPerceptionPacketUsable(base, 3, T + 4000)).toBe(false); // expired TTL
+    expect(isPerceptionPacketUsable({ ...base, dataSource: 'SIMULATED_SCENE' }, 3, T)).toBe(false);
+    expect(isPerceptionPacketUsable({ ...base, safeState: 'DEGRADED' }, 3, T)).toBe(false);
   });
 
   it('SingleFlightRunner prevents overlapping async inference pile-up', async () => {
@@ -142,12 +211,13 @@ describe('EchoSafe unified reliability state machine', () => {
     expect(r1.value).toBe('first');
   });
 
-  it('RuntimeMetricsTracker separates vision FPS from AI inference FPS & computes P95', () => {
+  it('RuntimeMetricsTracker separates vision FPS from AI FPS and tracks E2E P95 latency', () => {
     const tracker = new RuntimeMetricsTracker();
     for (let i = 0; i < 60; i++) tracker.recordVisionFrame(1000 + i * 33);
-    for (let i = 0; i < 10; i++) tracker.recordInference(1000 + i * 200, 80 + i * 20);
+    for (let i = 0; i < 10; i++) tracker.recordInference(1000 + i * 200, 60 + i * 10, 120 + i * 15);
     const snap = tracker.getSnapshot(3000);
     expect(snap.visionFps).toBeGreaterThan(snap.aiFps);
     expect(snap.p95InferenceMs).toBeGreaterThanOrEqual(snap.avgInferenceMs);
+    expect(snap.p95E2eMs).toBeGreaterThanOrEqual(snap.avgE2eMs);
   });
 });
