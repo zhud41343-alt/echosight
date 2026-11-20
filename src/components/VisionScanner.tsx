@@ -773,6 +773,13 @@ export const VisionScanner: React.FC = () => {
               className="w-full h-auto block touch-none cursor-crosshair"
             />
             <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-2">
+              <span className="screen-label">
+                {inputSource === 'camera'
+                  ? '真实摄像头'
+                  : inputSource === 'upload'
+                    ? '本地图片'
+                    : '模拟演示场景'}
+              </span>
               <span className="screen-label inline-flex items-center gap-1.5">
                 <span className={`led ${isScanning ? 'led-on' : ''}`} />
                 {isScanning ? 'HRTF 扫描中' : '待机'}

@@ -298,15 +298,13 @@ export function processFrameToAcousticMatrix(
   const rightDensity = Math.min(100, Math.round((rightSum / thirdCells) * 165));
   const edgeCoverage = Math.min(100, Math.round((edgePixels / (width * height)) * 300));
 
-  let navigationCue = '前方空间开阔，可平稳前行';
-  if (centerDensity > 42 && leftDensity < rightDensity) {
-    navigationCue = '正前方与右侧轮廓密集，建议向左侧绕行';
-  } else if (centerDensity > 42 && rightDensity <= leftDensity) {
-    navigationCue = '正前方与左侧障碍较多，建议向右侧偏移';
+  let navigationCue = `视觉边缘密度：左 ${leftDensity}% / 中 ${centerDensity}% / 右 ${rightDensity}%（仅供参考，不代表通道无障碍）`;
+  if (centerDensity > 45) {
+    navigationCue = `正前方视觉轮廓较密（${centerDensity}%），左侧 ${leftDensity}%、右侧 ${rightDensity}%，请结合盲杖与现场确认`;
   } else if (rightDensity > 48 && leftDensity < 30) {
-    navigationCue = '右侧检测到高对比物体，左侧通道相对空旷';
+    navigationCue = `右侧轮廓较密（${rightDensity}%），左侧轮廓较低（${leftDensity}%），仅供参考`;
   } else if (leftDensity > 48 && rightDensity < 30) {
-    navigationCue = '左侧检测到高对比物体，右侧通道相对空旷';
+    navigationCue = `左侧轮廓较密（${leftDensity}%），右侧轮廓较低（${rightDensity}%），仅供参考`;
   }
 
   return {

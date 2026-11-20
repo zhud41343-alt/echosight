@@ -1,14 +1,33 @@
-// On-Device Multimodal AI Object Detector (TensorFlow.js COCO-SSD + Offline Spatial Fallback)
-// Features:
-// - Full 80-class COCO Chinese vocabulary
-// - Monocular pinhole camera distance estimation in meters (up to ~12m for vehicles/people)
-// - 5-sector + clock-face directional localization
-// - Hazard prioritization & delta-aware warm Chinese voice guidance
+// On-Device Multimodal AI Object Detector (TensorFlow.js COCO-SSD)
+// Fail-Safe & Calibrated Monocular Estimation Architecture:
+// - Strictly isolates live camera inference from demo presets (`allowDemoFallback` must be false in live mode)
+// - Separates uncalibrated coarse range estimation from calibrated pinhole estimation
+// - Rejects clipped / tiny / malformed bounding boxes as '距离未知'
+// - Routes all speech through the unified AudioSpeechScheduler
 
 import type { PresetSceneId } from './visionProcessor';
-import { analyzeTrafficLightState } from './blindAssistTools';
+import { analyzeTrafficLightState, TrafficLightStabilizer } from './blindAssistTools';
+import { audioScheduler } from './audioScheduler';
 
 export type SpatialDirection = '正左侧' | '左前方' | '正前方' | '右前方' | '正右侧';
+
+export interface CameraCalibration {
+  calibrated: boolean;
+  /** Focal length in pixels for the reference calibration height */
+  focalLengthPx: number;
+  /** Reference image height in pixels at which focalLengthPx was calibrated */
+  referenceHeightPx: number;
+  deviceLabel?: string;
+}
+
+export interface DistanceEstimate {
+  valid: boolean;
+  calibrated: boolean;
+  estimatedMeters: number | null;
+  band: '近距离' | '中距离' | '较远处' | '未知';
+  displayText: string;
+  invalidReason?: 'clipped_vertical' | 'bbox_too_small' | 'unknown_class_height' | 'abnormal_aspect';
+}
 
 export interface SpatialDetection {
   labelEn: string;
@@ -16,12 +35,14 @@ export interface SpatialDetection {
   score: number; // 0..1
   bbox: [number, number, number, number]; // [x, y, w, h]
   direction: SpatialDirection;
-  clockFace: string; // e.g. '10点钟'
-  distance: '近距离' | '中距离' | '较远处';
-  distanceMeters: number; // Estimated distance in meters (e.g. 1.2, 4.5)
-  distanceText: string; // e.g. '约1.2米'
+  clockFace: string;
+  distance: '近距离' | '中距离' | '较远处' | '未知';
+  distanceMeters: number | null;
+  distanceText: string;
+  distanceCalibrated: boolean;
   priority: 'danger' | 'obstacle' | 'normal';
-  source: 'tfjs' | 'local-topology';
+  source: 'tfjs' | 'demo_preset';
+  detectedAt: number;
 }
 
 export const COCO_ZH_MAP: Record<string, string> = {
@@ -107,9 +128,7 @@ export const COCO_ZH_MAP: Record<string, string> = {
   toothbrush: '牙刷',
 };
 
-// Typical real-world vertical height in meters for pinhole monocular distance estimation:
-// D ≈ (H_real * focalPx) / bboxHeightPx
-const REAL_HEIGHT_M: Record<string, number> = {
+export const REAL_HEIGHT_M: Record<string, number> = {
   person: 1.68,
   bicycle: 1.05,
   car: 1.5,
@@ -176,67 +195,199 @@ const OBSTACLE_CLASSES = new Set([
   'doorway',
 ]);
 
-export function formatDistanceMeters(meters: number): string {
-  const clamped = Math.max(0.4, Math.min(15, meters));
-  if (clamped < 1.0) return `不到1米`;
-  if (clamped < 3.0) return `约${clamped.toFixed(1)}米`;
-  if (clamped < 10.0) return `约${Math.round(clamped)}米`;
-  return `约10米外`;
-}
-
-function computeSpatialMeta(
+/**
+ * Monocular distance estimator with explicit validity checks and calibration separation.
+ * - Rejects vertically clipped boxes (partial occlusion at top/bottom edge), tiny boxes, or extreme aspect ratios.
+ * - When uncalibrated, returns conservative range labels instead of false decimal precision.
+ */
+export function estimateMonocularDistance(
   labelEn: string,
   bbox: [number, number, number, number],
   canvasW: number,
-  canvasH: number
-): {
-  direction: SpatialDirection;
-  clockFace: string;
-  distance: '近距离' | '中距离' | '较远处';
-  distanceMeters: number;
-  distanceText: string;
-  priority: 'danger' | 'obstacle' | 'normal';
-} {
-  const [x, , w, h] = bbox;
-  const centerX = (x + w / 2) / canvasW;
+  canvasH: number,
+  calibration?: CameraCalibration | null
+): DistanceEstimate {
+  const [, y, w, h] = bbox;
+  const realH = REAL_HEIGHT_M[labelEn];
 
-  let direction: SpatialDirection = '正前方';
-  let clockFace = '12点方向';
-  if (centerX < 0.2) {
-    direction = '正左侧';
-    clockFace = '9点方向';
-  } else if (centerX < 0.39) {
-    direction = '左前方';
-    clockFace = '10点方向';
-  } else if (centerX <= 0.61) {
-    direction = '正前方';
-    clockFace = '12点方向';
-  } else if (centerX <= 0.8) {
-    direction = '右前方';
-    clockFace = '2点方向';
-  } else {
-    direction = '正右侧';
-    clockFace = '3点方向';
+  if (!realH) {
+    return {
+      valid: false,
+      calibrated: Boolean(calibration?.calibrated),
+      estimatedMeters: null,
+      band: '未知',
+      displayText: '距离未知',
+      invalidReason: 'unknown_class_height',
+    };
   }
 
-  // Smartphone rear camera typical vertical FOV ≈ 54° -> focalPx ≈ canvasH / (2 * tan(27°)) ≈ canvasH * 0.98
-  const focalPx = canvasH * 0.98;
-  const realH = REAL_HEIGHT_M[labelEn] ?? 0.65;
-  const safeBboxH = Math.max(12, h);
-  const rawMeters = (realH * focalPx) / safeBboxH;
-  const distanceMeters = Math.round(Math.max(0.4, Math.min(15, rawMeters)) * 10) / 10;
-  const distanceText = formatDistanceMeters(distanceMeters);
+  if (h < Math.max(14, canvasH * 0.04) || w < 8) {
+    return {
+      valid: false,
+      calibrated: Boolean(calibration?.calibrated),
+      estimatedMeters: null,
+      band: '未知',
+      displayText: '距离未知',
+      invalidReason: 'bbox_too_small',
+    };
+  }
 
-  const distance: '近距离' | '中距离' | '较远处' =
-    distanceMeters <= 2.0 ? '近距离' : distanceMeters <= 5.0 ? '中距离' : '较远处';
+  // If object touches both or either vertical edge heavily, bbox height is truncated
+  const clippedTop = y <= 2;
+  const clippedBottom = y + h >= canvasH - 2;
+  if ((clippedTop && clippedBottom) || (clippedBottom && h / canvasH > 0.78)) {
+    return {
+      valid: false,
+      calibrated: Boolean(calibration?.calibrated),
+      estimatedMeters: null,
+      band: '未知',
+      displayText: '距离未知（部分裁切）',
+      invalidReason: 'clipped_vertical',
+    };
+  }
 
-  const priority: 'danger' | 'obstacle' | 'normal' = DANGER_CLASSES.has(labelEn)
-    ? 'danger'
-    : OBSTACLE_CLASSES.has(labelEn)
-      ? 'obstacle'
-      : 'normal';
+  const aspect = w / Math.max(1, h);
+  if (aspect > 6.5 || aspect < 0.08) {
+    return {
+      valid: false,
+      calibrated: Boolean(calibration?.calibrated),
+      estimatedMeters: null,
+      band: '未知',
+      displayText: '距离未知',
+      invalidReason: 'abnormal_aspect',
+    };
+  }
 
-  return { direction, clockFace, distance, distanceMeters, distanceText, priority };
+  const isCalibrated = Boolean(calibration?.calibrated && calibration.focalLengthPx > 0);
+  const focalPx = isCalibrated
+    ? calibration!.focalLengthPx * (canvasH / Math.max(1, calibration!.referenceHeightPx))
+    : canvasH * 0.98; // Uncalibrated generic smartphone approximation
+
+  const rawMeters = (realH * focalPx) / h;
+  const clamped = Math.round(Math.max(0.3, Math.min(18, rawMeters)) * 100) / 100;
+
+  const band: '近距离' | '中距离' | '较远处' =
+    clamped <= 2.0 ? '近距离' : clamped <= 5.0 ? '中距离' : '较远处';
+
+  if (!isCalibrated) {
+    // Conservative range only when camera is uncalibrated
+    const rangeText =
+      band === '近距离'
+        ? '较近（未标定粗估）'
+        : band === '中距离'
+          ? '中距（未标定粗估）'
+          : '较远（未标定粗估）';
+    return {
+      valid: true,
+      calibrated: false,
+      estimatedMeters: clamped,
+      band,
+      displayText: rangeText,
+    };
+  }
+
+  // Calibrated conservative interval (±20%)
+  const low = Math.max(0.3, Math.round(clamped * 0.85 * 10) / 10);
+  const high = Math.round(clamped * 1.15 * 10) / 10;
+  return {
+    valid: true,
+    calibrated: true,
+    estimatedMeters: clamped,
+    band,
+    displayText: `约${low}–${high}米`,
+  };
+}
+
+export interface DistanceEvalSample {
+  referenceMeters: number;
+  predictedMeters: number | null;
+}
+
+export interface DistanceBandStat {
+  band: string;
+  count: number;
+  validCount: number;
+  maeMeters: number | null;
+  p90ErrorMeters: number | null;
+}
+
+export interface DistanceErrorReport {
+  total: number;
+  validCount: number;
+  unknownCount: number;
+  maeMeters: number | null;
+  p90ErrorMeters: number | null;
+  byBand: DistanceBandStat[];
+}
+
+function calcErrors(pairs: Array<{ ref: number; pred: number }>): {
+  mae: number | null;
+  p90: number | null;
+} {
+  if (pairs.length === 0) return { mae: null, p90: null };
+  const absErrors = pairs.map((p) => Math.abs(p.pred - p.ref)).sort((a, b) => a - b);
+  const mae = absErrors.reduce((a, b) => a + b, 0) / absErrors.length;
+  const p90Idx = Math.min(absErrors.length - 1, Math.floor(absErrors.length * 0.9));
+  return {
+    mae: Math.round(mae * 1000) / 1000,
+    p90: Math.round(absErrors[p90Idx] * 1000) / 1000,
+  };
+}
+
+/**
+ * Computes MAE, P90 absolute error, and per-distance-band statistics.
+ */
+export function computeDistanceErrorStats(samples: DistanceEvalSample[]): DistanceErrorReport {
+  const validPairs: Array<{ ref: number; pred: number }> = [];
+  for (const s of samples) {
+    if (s.predictedMeters !== null && Number.isFinite(s.predictedMeters)) {
+      validPairs.push({ ref: s.referenceMeters, pred: s.predictedMeters });
+    }
+  }
+  const overall = calcErrors(validPairs);
+
+  const bands: Array<{ label: string; min: number; max: number }> = [
+    { label: '0.5–2m', min: 0, max: 2.01 },
+    { label: '2–5m', min: 2.01, max: 5.01 },
+    { label: '5–10m', min: 5.01, max: 12.0 },
+  ];
+
+  const byBand: DistanceBandStat[] = bands.map((b) => {
+    const inBand = samples.filter((s) => s.referenceMeters >= b.min && s.referenceMeters < b.max);
+    const validInBand = inBand
+      .filter((s) => s.predictedMeters !== null)
+      .map((s) => ({ ref: s.referenceMeters, pred: s.predictedMeters! }));
+    const st = calcErrors(validInBand);
+    return {
+      band: b.label,
+      count: inBand.length,
+      validCount: validInBand.length,
+      maeMeters: st.mae,
+      p90ErrorMeters: st.p90,
+    };
+  });
+
+  return {
+    total: samples.length,
+    validCount: validPairs.length,
+    unknownCount: samples.length - validPairs.length,
+    maeMeters: overall.mae,
+    p90ErrorMeters: overall.p90,
+    byBand,
+  };
+}
+
+function computeDirectionMeta(
+  bbox: [number, number, number, number],
+  canvasW: number
+): { direction: SpatialDirection; clockFace: string } {
+  const [x, , w] = bbox;
+  const centerX = (x + w / 2) / Math.max(1, canvasW);
+  if (centerX < 0.2) return { direction: '正左侧', clockFace: '9点方向' };
+  if (centerX < 0.39) return { direction: '左前方', clockFace: '10点方向' };
+  if (centerX <= 0.61) return { direction: '正前方', clockFace: '12点方向' };
+  if (centerX <= 0.8) return { direction: '右前方', clockFace: '2点方向' };
+  return { direction: '正右侧', clockFace: '3点方向' };
 }
 
 type CocoModel = {
@@ -249,76 +400,137 @@ type CocoModel = {
 
 let loadedModel: CocoModel | null = null;
 let loadedModelVariant: 'mobilenet_v2' | 'lite_mobilenet_v2' | null = null;
+let lastModelLoadMs: number | null = null;
 let loadFailed = false;
+
+const trafficLightStabilizer = new TrafficLightStabilizer(3);
+
+export interface ModelLoadResult {
+  /** True ONLY when the neural network actually loaded and can infer */
+  modelReady: boolean;
+  /** Backwards-compatible alias for demo/studio callers */
+  ready: boolean;
+  fallback: boolean;
+  variant: 'mobilenet_v2' | 'lite_mobilenet_v2' | 'none';
+  loadMs: number;
+}
 
 export async function loadOnDeviceAIModel(
   onStatus?: (msg: string) => void
-): Promise<{ ready: boolean; fallback: boolean }> {
-  if (loadedModel) {
+): Promise<ModelLoadResult> {
+  if (loadedModel && loadedModelVariant) {
     onStatus?.(
       loadedModelVariant === 'mobilenet_v2'
-        ? '高精度 MobileNet v2 就绪（80 类物体 · 远距米数测距）'
-        : '轻量 COCO-SSD 就绪（80 类物体 · 远距米数测距）'
+        ? '端侧 MobileNet v2 就绪（本地 WebGL 推理）'
+        : '端侧轻量 COCO-SSD 就绪（本地 WebGL 推理）'
     );
-    return { ready: true, fallback: false };
+    return {
+      modelReady: true,
+      ready: true,
+      fallback: false,
+      variant: loadedModelVariant,
+      loadMs: lastModelLoadMs ?? 0,
+    };
   }
-  if (loadFailed) return { ready: true, fallback: true };
+  if (loadFailed) {
+    onStatus?.('端侧神经网络加载失败（实时识别已降级为不可用）');
+    return {
+      modelReady: false,
+      ready: false,
+      fallback: true,
+      variant: 'none',
+      loadMs: lastModelLoadMs ?? 0,
+    };
+  }
 
+  const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   try {
-    onStatus?.('正在启动本地 TensorFlow.js GPU 推理引擎...');
+    onStatus?.('正在启动本地 TensorFlow.js 推理引擎...');
     const tf = await import('@tensorflow/tfjs');
     await tf.ready();
-    onStatus?.('正在加载高精度视觉模型（支持 80 类物体与远距测距）...');
+    onStatus?.('正在加载端侧 COCO-SSD（80 类物体）...');
     const cocoSsd = await import('@tensorflow-models/coco-ssd');
     try {
       loadedModel = (await cocoSsd.load({ base: 'mobilenet_v2' })) as unknown as CocoModel;
       loadedModelVariant = 'mobilenet_v2';
-      onStatus?.('高精度 MobileNet v2 就绪（80 类物体 · 远距米数测距）');
     } catch {
       loadedModel = (await cocoSsd.load({ base: 'lite_mobilenet_v2' })) as unknown as CocoModel;
       loadedModelVariant = 'lite_mobilenet_v2';
-      onStatus?.('轻量 COCO-SSD 就绪（80 类物体 · 远距米数测距）');
     }
-    return { ready: true, fallback: false };
+    lastModelLoadMs = Math.round(
+      (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+    );
+    onStatus?.(
+      loadedModelVariant === 'mobilenet_v2'
+        ? `端侧 MobileNet v2 就绪（耗时 ${lastModelLoadMs}ms，本地 WebGL 推理）`
+        : `端侧轻量 COCO-SSD 就绪（耗时 ${lastModelLoadMs}ms）`
+    );
+    return {
+      modelReady: true,
+      ready: true,
+      fallback: false,
+      variant: loadedModelVariant,
+      loadMs: lastModelLoadMs,
+    };
   } catch {
     loadFailed = true;
-    onStatus?.('已自动切换至离线拓扑语义模式（无需联网下载权重）');
-    return { ready: true, fallback: true };
+    lastModelLoadMs = Math.round(
+      (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+    );
+    onStatus?.('端侧神经网络加载失败：实时识别不可用，请勿依赖物体识别结果');
+    return {
+      modelReady: false,
+      ready: false,
+      fallback: true,
+      variant: 'none',
+      loadMs: lastModelLoadMs,
+    };
   }
 }
 
-function getProceduralFallbackDetections(
+export function getLoadedModelState(): 'idle' | 'ready' | 'failed' {
+  if (loadedModel) return 'ready';
+  if (loadFailed) return 'failed';
+  return 'idle';
+}
+
+function getDemoPresetDetections(
   preset: PresetSceneId,
   w: number,
-  h: number
+  h: number,
+  now: number
 ): SpatialDetection[] {
   if (preset === 'crosswalk') {
     return [
       {
         labelEn: 'car',
-        labelZh: '来向车辆',
+        labelZh: '模拟车辆（演示数据）',
         score: 0.91,
         bbox: [w * 0.67, h * 0.43, w * 0.26, h * 0.28],
         direction: '右前方',
         clockFace: '2点方向',
         distance: '近距离',
-        distanceMeters: 2.2,
-        distanceText: '约2.2米',
+        distanceMeters: null,
+        distanceText: '演示场景',
+        distanceCalibrated: false,
         priority: 'danger',
-        source: 'local-topology',
+        source: 'demo_preset',
+        detectedAt: now,
       },
       {
         labelEn: 'traffic light',
-        labelZh: '交通信号灯（绿灯）',
+        labelZh: '模拟信号灯（绿色像素·仅演示）',
         score: 0.94,
         bbox: [w * 0.11, h * 0.11, w * 0.1, h * 0.25],
         direction: '左前方',
         clockFace: '10点方向',
         distance: '中距离',
-        distanceMeters: 4.5,
-        distanceText: '约5米',
+        distanceMeters: null,
+        distanceText: '演示场景',
+        distanceCalibrated: false,
         priority: 'obstacle',
-        source: 'local-topology',
+        source: 'demo_preset',
+        detectedAt: now,
       },
     ];
   }
@@ -326,29 +538,33 @@ function getProceduralFallbackDetections(
     return [
       {
         labelEn: 'dining table',
-        labelZh: '餐桌障碍',
+        labelZh: '模拟餐桌（演示数据）',
         score: 0.92,
         bbox: [w * 0.07, h * 0.3, w * 0.36, h * 0.58],
         direction: '左前方',
         clockFace: '10点方向',
         distance: '近距离',
-        distanceMeters: 1.3,
-        distanceText: '约1.3米',
+        distanceMeters: null,
+        distanceText: '演示场景',
+        distanceCalibrated: false,
         priority: 'obstacle',
-        source: 'local-topology',
+        source: 'demo_preset',
+        detectedAt: now,
       },
       {
         labelEn: 'doorway',
-        labelZh: '明亮门框通道',
+        labelZh: '模拟门框（演示数据）',
         score: 0.89,
         bbox: [w * 0.55, h * 0.13, w * 0.24, h * 0.68],
         direction: '右前方',
         clockFace: '2点方向',
         distance: '中距离',
-        distanceMeters: 2.8,
-        distanceText: '约2.8米',
+        distanceMeters: null,
+        distanceText: '演示场景',
+        distanceCalibrated: false,
         priority: 'obstacle',
-        source: 'local-topology',
+        source: 'demo_preset',
+        detectedAt: now,
       },
     ];
   }
@@ -356,170 +572,173 @@ function getProceduralFallbackDetections(
     return [
       {
         labelEn: 'moon',
-        labelZh: '高空高亮光源（明月）',
+        labelZh: '模拟光源（演示数据）',
         score: 0.95,
         bbox: [w * 0.72, h * 0.12, w * 0.12, h * 0.2],
         direction: '右前方',
         clockFace: '2点方向',
         distance: '较远处',
-        distanceMeters: 10,
-        distanceText: '约10米外',
+        distanceMeters: null,
+        distanceText: '演示场景',
+        distanceCalibrated: false,
         priority: 'normal',
-        source: 'local-topology',
-      },
-      {
-        labelEn: 'ridge',
-        labelZh: '连续起伏轮廓线',
-        score: 0.9,
-        bbox: [w * 0.15, h * 0.32, w * 0.7, h * 0.48],
-        direction: '正前方',
-        clockFace: '12点方向',
-        distance: '中距离',
-        distanceMeters: 4.0,
-        distanceText: '约4米',
-        priority: 'normal',
-        source: 'local-topology',
+        source: 'demo_preset',
+        detectedAt: now,
       },
     ];
   }
   return [
     {
       labelEn: 'target',
-      labelZh: '中心同心圆校准靶标',
+      labelZh: '模拟校准靶标（演示数据）',
       score: 0.96,
       bbox: [w * 0.34, h * 0.25, w * 0.32, h * 0.5],
       direction: '正前方',
       clockFace: '12点方向',
       distance: '中距离',
-      distanceMeters: 2.5,
-      distanceText: '约2.5米',
+      distanceMeters: null,
+      distanceText: '演示场景',
+      distanceCalibrated: false,
       priority: 'normal',
-      source: 'local-topology',
+      source: 'demo_preset',
+      detectedAt: now,
     },
   ];
 }
 
 function rankDetections(items: SpatialDetection[]): SpatialDetection[] {
   const prioWeight = { danger: 3, obstacle: 2, normal: 1 };
+  const bandWeight = { 近距离: 3, 中距离: 2, 较远处: 1, 未知: 0 };
   return [...items].sort((a, b) => {
-    const proxA = 10 / Math.max(0.5, a.distanceMeters);
-    const proxB = 10 / Math.max(0.5, b.distanceMeters);
-    const scoreA = prioWeight[a.priority] * 8 + proxA + a.score;
-    const scoreB = prioWeight[b.priority] * 8 + proxB + b.score;
+    const scoreA = prioWeight[a.priority] * 10 + bandWeight[a.distance] * 3 + a.score;
+    const scoreB = prioWeight[b.priority] * 10 + bandWeight[b.distance] * 3 + b.score;
     return scoreB - scoreA;
   });
 }
 
+/**
+ * Runs object detection.
+ * CRITICAL DATA ISOLATION RULE:
+ * When `allowDemoFallback` is false (all live camera / blind-assist modes),
+ * demo preset boxes are NEVER returned.
+ */
 export async function detectSpatialObjects(
   canvas: HTMLCanvasElement,
-  isProceduralPreset: boolean,
-  presetId: PresetSceneId
+  allowDemoFallback: boolean,
+  presetId: PresetSceneId,
+  calibration?: CameraCalibration | null
 ): Promise<SpatialDetection[]> {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
   if (loadedModel && !loadFailed) {
-    try {
-      // Lower minScore to 0.30 so distant pedestrians, cars, and traffic lights (5-12m) are caught earlier
-      const preds = await loadedModel.detect(canvas, 10, 0.3);
-      if (preds.length > 0) {
-        const mapped: SpatialDetection[] = preds.map((p) => {
-          const meta = computeSpatialMeta(p.class, p.bbox, canvas.width, canvas.height);
-          let labelZh = COCO_ZH_MAP[p.class] || p.class;
-          if (p.class === 'traffic light') {
-            const state = analyzeTrafficLightState(canvas, p.bbox);
-            if (state !== '未知') {
-              labelZh = `交通信号灯（${state}）`;
-            }
+    const preds = await loadedModel.detect(canvas, 8, 0.36);
+    if (preds.length > 0) {
+      const mapped: SpatialDetection[] = preds.map((p) => {
+        const dir = computeDirectionMeta(p.bbox, canvas.width);
+        const dist = estimateMonocularDistance(
+          p.class,
+          p.bbox,
+          canvas.width,
+          canvas.height,
+          calibration
+        );
+        const priority: 'danger' | 'obstacle' | 'normal' = DANGER_CLASSES.has(p.class)
+          ? 'danger'
+          : OBSTACLE_CLASSES.has(p.class)
+            ? 'obstacle'
+            : 'normal';
+
+        let labelZh = COCO_ZH_MAP[p.class] || p.class;
+        // Experimental color check ONLY — explicitly labeled as pixel color, not crossing clearance
+        if (p.class === 'traffic light') {
+          const rawColor = analyzeTrafficLightState(canvas, p.bbox);
+          const stableColor = trafficLightStabilizer.push(rawColor);
+          if (stableColor !== '未知') {
+            labelZh = `交通信号灯（${stableColor}·仅供参考）`;
           }
-          return {
-            labelEn: p.class,
-            labelZh,
-            score: p.score,
-            bbox: p.bbox,
-            direction: meta.direction,
-            clockFace: meta.clockFace,
-            distance: meta.distance,
-            distanceMeters: meta.distanceMeters,
-            distanceText: meta.distanceText,
-            priority: meta.priority,
-            source: 'tfjs',
-          };
-        });
-        return rankDetections(mapped);
-      }
-    } catch {
-      // Fallback gracefully
+        }
+
+        return {
+          labelEn: p.class,
+          labelZh,
+          score: p.score,
+          bbox: p.bbox,
+          direction: dir.direction,
+          clockFace: dir.clockFace,
+          distance: dist.band,
+          distanceMeters: dist.estimatedMeters,
+          distanceText: dist.displayText,
+          distanceCalibrated: dist.calibrated,
+          priority,
+          source: 'tfjs',
+          detectedAt: now,
+        };
+      });
+      return rankDetections(mapped);
     }
+    return [];
   }
 
-  if (isProceduralPreset) {
-    return rankDetections(getProceduralFallbackDetections(presetId, canvas.width, canvas.height));
+  if (allowDemoFallback) {
+    return rankDetections(getDemoPresetDetections(presetId, canvas.width, canvas.height, now));
   }
 
   return [];
 }
 
-export function speakCue(text: string, rate = 1.04) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-  if (!text.trim()) return;
-  try {
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'zh-CN';
-    u.rate = rate;
-    window.speechSynthesis.speak(u);
-  } catch {
-    // Ignore speech errors
-  }
+export function speakCue(
+  text: string,
+  rate = 1.04,
+  priority: 'EMERGENCY' | 'USER_QUERY' | 'AMBIENT' = 'USER_QUERY'
+) {
+  audioScheduler.schedule({
+    text,
+    priority,
+    rate,
+  });
 }
 
-let lastSpokenAt = 0;
-let lastSpokenSignature = '';
-
 /**
- * Delta-aware natural Chinese guidance with exact meter distances.
+ * Fail-Safe spatial narration routed through AudioSpeechScheduler.
+ * NEVER infers "safe / clear / walkable" from an empty detection array.
  */
 export function speakSpatialDetections(
   detections: SpatialDetection[],
   force = false,
-  fallbackNavigationCue?: string
+  fallbackStatusCue?: string
 ): string | null {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
-  const now = performance.now();
-
   if (detections.length === 0) {
-    if (!force && !fallbackNavigationCue) return null;
-    if (!force && now - lastSpokenAt < 7500) return null;
-    const text = fallbackNavigationCue || '前方视野比较空旷，暂时没有发现明显障碍物，可以平稳往前走。';
-    if (!force && text === lastSpokenSignature && now - lastSpokenAt < 14000) return null;
-    lastSpokenAt = now;
-    lastSpokenSignature = text;
-    speakCue(text);
-    return text;
+    if (!force && !fallbackStatusCue) return null;
+    const text =
+      fallbackStatusCue ||
+      '未检测到已支持类别的物体。这不代表前方无障碍，请结合盲杖与现场确认。';
+    const res = audioScheduler.schedule({
+      text,
+      priority: force ? 'USER_QUERY' : 'AMBIENT',
+      dedupeKey: `empty:${text}`,
+      cooldownMs: force ? 0 : 12000,
+    });
+    return res.accepted ? text : null;
   }
 
   const top = detections.slice(0, 3);
-  const signature = top
-    .map((d) => `${d.direction}-${Math.round(d.distanceMeters)}-${d.labelZh}`)
-    .join('|');
-  const hasNearHazard = top.some((d) => d.priority === 'danger' && d.distanceMeters <= 3.5);
-
-  if (!force) {
-    const minInterval = hasNearHazard ? 3000 : 4800;
-    if (now - lastSpokenAt < minInterval) return null;
-    if (signature === lastSpokenSignature && !hasNearHazard && now - lastSpokenAt < 12000) {
-      return null;
-    }
-  }
-
-  lastSpokenAt = now;
-  lastSpokenSignature = signature;
+  const signature = top.map((d) => `${d.direction}-${d.distance}-${d.labelZh}`).join('|');
+  const hasNearHazard = top.some((d) => d.priority === 'danger' && d.distance === '近距离');
 
   const summary = top
     .map((d) => {
-      const prefix = d.priority === 'danger' && d.distanceMeters <= 3.5 ? '小心，' : '';
-      return `${prefix}${d.direction}${d.distanceText}有${d.labelZh}`;
+      const distPart = d.distance === '未知' ? '距离未知' : d.distanceText;
+      const prefix = d.priority === 'danger' && d.distance === '近距离' ? '提示，' : '';
+      return `${prefix}${d.direction}${distPart}检测到${d.labelZh}`;
     })
     .join('；');
 
-  speakCue(summary);
-  return summary;
+  const res = audioScheduler.schedule({
+    text: summary,
+    priority: force ? 'USER_QUERY' : hasNearHazard ? 'EMERGENCY' : 'AMBIENT',
+    dedupeKey: signature,
+    cooldownMs: force ? 0 : hasNearHazard ? 3000 : 10000,
+  });
+
+  return res.accepted ? summary : null;
 }

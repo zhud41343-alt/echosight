@@ -6,10 +6,11 @@ import { BlindSceneTheater } from './components/BlindSceneTheater';
 import { AcousticCanvas } from './components/AcousticCanvas';
 import { DarkMaze } from './components/DarkMaze';
 import { TechArchitecture } from './components/TechArchitecture';
+import { ValidationPanel } from './components/ValidationPanel';
 import { spatialAudio } from './engine/spatialAudio';
 
 type AppView = 'companion' | 'studio';
-type TabId = 'scanner' | 'theater' | 'canvas' | 'maze' | 'arch';
+type TabId = 'scanner' | 'theater' | 'canvas' | 'maze' | 'arch' | 'validation';
 
 const TABS: { id: TabId; no: string; label: string; sub: string }[] = [
   { id: 'scanner', no: '01', label: '声画扫描', sub: '摄像头 / 图片 → 立体声场' },
@@ -17,6 +18,7 @@ const TABS: { id: TabId; no: string; label: string; sub: string }[] = [
   { id: 'canvas', no: '03', label: '指尖听画', sub: '画一笔，听一笔' },
   { id: 'maze', no: '04', label: '黑暗迷宫', sub: '只用耳朵找到出口' },
   { id: 'arch', no: '05', label: '原理与硬件', sub: '算法、穿戴方案与路线' },
+  { id: 'validation', no: '06', label: '技术验证', sub: 'EchoSafe 对比与边界' },
 ];
 
 /** Small hand-drawn style waveform used as a quiet brand mark. */
@@ -94,6 +96,7 @@ export function App() {
       else if (e.key === '3') setActiveTab('canvas');
       else if (e.key === '4') setActiveTab('maze');
       else if (e.key === '5') setActiveTab('arch');
+      else if (e.key === '6') setActiveTab('validation');
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -144,10 +147,10 @@ export function App() {
               aria-pressed={highContrast}
               onClick={() => setHighContrast((v) => !v)}
               className={`btn btn-sm ${highContrast ? 'btn-active' : ''}`}
-              title="切换面向弱视用户的 WCAG AAA 纯黑高对比大字模式"
+              title="切换纯黑高对比度大字显示模式"
             >
               <Contrast className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{highContrast ? '标准纸面' : '弱视高对比'}</span>
+              <span className="hidden sm:inline">{highContrast ? '标准纸面' : '高对比模式'}</span>
             </button>
             <button
               type="button"
@@ -251,35 +254,50 @@ export function App() {
           </section>
         )}
 
-        {/* Module Navigation */}
+        {/* Module Navigation (WAI-ARIA Tabs pattern with Arrow/Home/End keyboard support) */}
         <nav
           role="tablist"
-          aria-label="EchoSight 功能模块"
-          className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 border-b border-line"
+          aria-label="EchoSight 专业实验台功能模块"
+          className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 border-b border-line"
         >
-          {TABS.map((t) => {
+          {TABS.map((t, idx) => {
             const active = activeTab === t.id;
             return (
               <button
                 key={t.id}
+                id={`tab-${t.id}`}
                 type="button"
                 role="tab"
                 aria-selected={active}
+                aria-controls={`panel-${t.id}`}
+                tabIndex={active ? 0 : -1}
                 onClick={() => setActiveTab(t.id)}
+                onKeyDown={(e) => {
+                  let nextIdx = idx;
+                  if (e.key === 'ArrowRight') nextIdx = (idx + 1) % TABS.length;
+                  else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + TABS.length) % TABS.length;
+                  else if (e.key === 'Home') nextIdx = 0;
+                  else if (e.key === 'End') nextIdx = TABS.length - 1;
+                  else return;
+                  e.preventDefault();
+                  const nextTab = TABS[nextIdx];
+                  setActiveTab(nextTab.id);
+                  document.getElementById(`tab-${nextTab.id}`)?.focus();
+                }}
                 className={`group relative text-left px-1 sm:px-2 py-4 transition-colors ${
                   active ? 'text-ink' : 'text-ink-3 hover:text-ink-2'
                 }`}
               >
-                <div className="flex items-baseline gap-2.5">
+                <div className="flex items-baseline gap-2">
                   <span className={`num text-[12px] ${active ? 'text-signal-ink' : ''}`}>{t.no}</span>
-                  <span className="text-[15px] font-semibold">{t.label}</span>
-                  <span className="kbd ml-auto mr-2 hidden lg:inline-flex opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className="text-[14px] font-semibold">{t.label}</span>
+                  <span className="kbd ml-auto mr-1 hidden lg:inline-flex opacity-0 group-hover:opacity-100 transition-opacity">
                     {Number(t.no)}
                   </span>
                 </div>
-                <div className="mt-1 pl-[30px] text-[12px] text-ink-3">{t.sub}</div>
+                <div className="mt-1 pl-[26px] text-[11.5px] text-ink-3 truncate">{t.sub}</div>
                 <span
-                  className={`absolute left-0 right-3 -bottom-px h-[2px] transition-colors ${
+                  className={`absolute left-0 right-2 -bottom-px h-[2px] transition-colors ${
                     active ? 'bg-signal' : 'bg-transparent'
                   }`}
                 />
@@ -289,12 +307,19 @@ export function App() {
         </nav>
 
         {/* Active Module */}
-        <section className="py-8" role="tabpanel">
+        <section
+          id={`panel-${activeTab}`}
+          aria-labelledby={`tab-${activeTab}`}
+          className="py-8"
+          role="tabpanel"
+          tabIndex={0}
+        >
           {activeTab === 'scanner' && <VisionScanner />}
           {activeTab === 'theater' && <BlindSceneTheater />}
           {activeTab === 'canvas' && <AcousticCanvas />}
           {activeTab === 'maze' && <DarkMaze />}
           {activeTab === 'arch' && <TechArchitecture />}
+          {activeTab === 'validation' && <ValidationPanel />}
         </section>
           </>
         )}
@@ -305,9 +330,9 @@ export function App() {
         <div className="mx-auto max-w-6xl px-5 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[12.5px] text-ink-3">
           <div>
             <span className="title-serif text-[14px] text-ink mr-2">听见光影</span>
-            2026 Qoder 高校创造力大赛 · Hack4Good 技术向善赛道
+            2026 Qoder 高校创造力大赛 · Hack4Good 技术向善赛道（辅助感知研究原型）
           </div>
-          <div>全部计算在浏览器本地完成，不上传任何画面</div>
+          <div>视觉与音频在本地计算，不上传画面；浏览器语音识别可能依赖厂商云服务</div>
         </div>
       </footer>
     </div>
