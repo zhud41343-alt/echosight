@@ -1,0 +1,18 @@
+{
+  "name": "听见光影 EchoSight",
+  "short_name": "听见光影",
+  "description": "视障感官替代 3D 空间声场与日常助行引擎",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f2efe8",
+  "theme_color": "#f2efe8",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
