@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   CameraCalibration,
   computeDistanceErrorStats,
+  DetectionStabilizer,
   estimateMonocularDistance,
   REAL_HEIGHT_M,
+  SpatialDetection,
 } from '../src/engine/aiObjectDetector';
 
 describe('Monocular distance estimation & MAE/P90 benchmark harness', () => {
@@ -58,5 +60,32 @@ describe('Monocular distance estimation & MAE/P90 benchmark harness', () => {
     expect(report.maeMeters).not.toBeNull();
     expect(report.p90ErrorMeters).not.toBeNull();
     expect(report.byBand.length).toBe(3);
+  });
+
+  it('DetectionStabilizer passes high-confidence immediately and filters single-frame low-confidence flicker', () => {
+    const stab = new DetectionStabilizer();
+    const makeDet = (labelEn: string, score: number): SpatialDetection => ({
+      labelEn,
+      labelZh: labelEn,
+      score,
+      bbox: [10, 10, 100, 100],
+      direction: '正前方',
+      clockFace: '12点方向',
+      distance: '近距离',
+      distanceMeters: 1.5,
+      distanceText: '较近（未标定粗估）',
+      distanceCalibrated: false,
+      priority: 'normal',
+      source: 'tfjs',
+      detectedAt: 1000,
+    });
+
+    // Frame 1: chair (0.75) passes immediately; cup (0.42) held for 2-frame confirmation
+    const f1 = stab.filter([makeDet('chair', 0.75), makeDet('cup', 0.42)]);
+    expect(f1.map((d) => d.labelEn)).toEqual(['chair']);
+
+    // Frame 2: cup (0.44) appears consecutively -> now confirmed!
+    const f2 = stab.filter([makeDet('chair', 0.72), makeDet('cup', 0.44)]);
+    expect(f2.map((d) => d.labelEn)).toEqual(['chair', 'cup']);
   });
 });

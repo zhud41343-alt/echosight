@@ -10,6 +10,35 @@ export interface SpatialSceneMetrics {
   navigationCue: string;
 }
 
+/**
+ * Draw a video or image onto a canvas preserving its true aspect ratio (letterbox contain)
+ * so portrait smartphone rear cameras are NEVER squashed/stretched before AI object detection.
+ */
+export function drawMediaContain(
+  ctx: CanvasRenderingContext2D,
+  media: HTMLVideoElement | HTMLImageElement,
+  canvasW: number,
+  canvasH: number,
+  bgColor = '#161512'
+): { dx: number; dy: number; dw: number; dh: number } {
+  const srcW =
+    media instanceof HTMLVideoElement ? media.videoWidth || canvasW : media.naturalWidth || media.width;
+  const srcH =
+    media instanceof HTMLVideoElement ? media.videoHeight || canvasH : media.naturalHeight || media.height;
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, canvasW, canvasH);
+  if (srcW <= 0 || srcH <= 0) {
+    return { dx: 0, dy: 0, dw: canvasW, dh: canvasH };
+  }
+  const scale = Math.min(canvasW / srcW, canvasH / srcH);
+  const dw = srcW * scale;
+  const dh = srcH * scale;
+  const dx = (canvasW - dw) / 2;
+  const dy = (canvasH - dh) / 2;
+  ctx.drawImage(media, dx, dy, dw, dh);
+  return { dx, dy, dw, dh };
+}
+
 export interface AcousticMatrixResult {
   cols: number;
   rows: number;

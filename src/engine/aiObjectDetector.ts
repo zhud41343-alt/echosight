@@ -405,6 +405,27 @@ let loadFailed = false;
 
 const trafficLightStabilizer = new TrafficLightStabilizer(3);
 
+/**
+ * Lightweight temporal stabilizer to reduce single-frame MobileNet false positives
+ * on handheld mobile cameras:
+ * - High-confidence detections (>= 0.52) pass immediately.
+ * - Medium-confidence detections (0.36..0.52) require appearing in 2 consecutive cycles.
+ */
+export class DetectionStabilizer {
+  private prevClasses = new Set<string>();
+
+  public filter(items: SpatialDetection[]): SpatialDetection[] {
+    const currentClasses = new Set(items.map((d) => d.labelEn));
+    const kept = items.filter((d) => d.score >= 0.52 || this.prevClasses.has(d.labelEn));
+    this.prevClasses = currentClasses;
+    return kept;
+  }
+
+  public reset() {
+    this.prevClasses.clear();
+  }
+}
+
 export interface ModelLoadResult {
   /** True ONLY when the neural network actually loaded and can infer */
   modelReady: boolean;

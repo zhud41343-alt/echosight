@@ -15,6 +15,7 @@ import {
   Target,
 } from 'lucide-react';
 import {
+  drawMediaContain,
   drawPresetScene,
   PresetSceneId,
   processFrameToAcousticMatrix,
@@ -132,7 +133,7 @@ export const VisionScanner: React.FC = () => {
     if (!ctx) return;
 
     if (cameraActive && videoRef.current && videoRef.current.readyState >= 2) {
-      ctx.drawImage(videoRef.current, 0, 0, CANVAS_W, CANVAS_H);
+      drawMediaContain(ctx, videoRef.current, CANVAS_W, CANVAS_H);
     } else if (uploadedImgRef.current) {
       ctx.fillStyle = '#161512';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
@@ -177,7 +178,7 @@ export const VisionScanner: React.FC = () => {
         const srcCanvas = sourceCanvasRef.current;
         const sCtx = srcCanvas?.getContext('2d', { willReadFrequently: true });
         if (srcCanvas && sCtx) {
-          sCtx.drawImage(videoRef.current, 0, 0, CANVAS_W, CANVAS_H);
+          drawMediaContain(sCtx, videoRef.current, CANVAS_W, CANVAS_H);
           const imgData = sCtx.getImageData(0, 0, CANVAS_W, CANVAS_H);
           const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
           matrixRef.current = res.matrix;

@@ -5,6 +5,7 @@ import {
   SpatialSceneMetrics,
 } from '../engine/visionProcessor';
 import {
+  DetectionStabilizer,
   detectSpatialObjects,
   loadOnDeviceAIModel,
   SpatialDetection,
@@ -29,8 +30,7 @@ import {
 } from '../engine/echoSafe';
 import { audioScheduler } from '../engine/audioScheduler';
 
-const PROC_W = 640;
-const PROC_H = 420;
+const MAX_PROC_DIM = 640;
 const COLS = 48;
 const ROWS = 16;
 const PACKET_TTL_MS = 4000;
@@ -55,11 +55,14 @@ type VideoWithVfc = HTMLVideoElement & {
 
 export const BlindCompanionView: React.FC = () => {
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const acousticMonitorRef = useRef<AcousticThreatMonitor | null>(null);
   const sessionGuardRef = useRef(new SessionGuard());
   const singleFlightRef = useRef(new SingleFlightRunner());
   const metricsTrackerRef = useRef(new RuntimeMetricsTracker());
+  const stabilizerRef = useRef(new DetectionStabilizer());
+  const procSizeRef = useRef<{ w: number; h: number }>({ w: 640, h: 480 });
 
   const signalsRef = useRef<EchoSafeSignals>(createInitialSignals());
   const [safeSnap, setSafeSnap] = useState<EchoSafeSnapshot>(() =>
@@ -172,7 +175,13 @@ export const BlindCompanionView: React.FC = () => {
       modelState: signalsRef.current.modelState === 'ready' ? 'ready' : 'idle',
     };
     packetRef.current = null;
+    stabilizerRef.current.reset();
     setDetections([]);
+    const ov = overlayCanvasRef.current;
+    if (ov) {
+      const oCtx = ov.getContext('2d');
+      oCtx?.clearRect(0, 0, ov.width, ov.height);
+    }
     setFinderTarget(null);
     setAnomalyNote('');
     setLowEdgeDense(false);
@@ -410,8 +419,19 @@ export const BlindCompanionView: React.FC = () => {
         const src = sourceCanvasRef.current;
         const ctx = src?.getContext('2d', { willReadFrequently: true });
         if (src && ctx && frameAdvanced) {
-          ctx.drawImage(vid, 0, 0, PROC_W, PROC_H);
-          const imgData = ctx.getImageData(0, 0, PROC_W, PROC_H);
+          // Adapt canvas to the video's true native aspect ratio (zero portrait squashing!)
+          const vw = vid.videoWidth || 640;
+          const vh = vid.videoHeight || 480;
+          const scale = Math.min(1, MAX_PROC_DIM / Math.max(vw, vh));
+          const targetW = Math.max(160, Math.round(vw * scale));
+          const targetH = Math.max(160, Math.round(vh * scale));
+          if (src.width !== targetW || src.height !== targetH) {
+            src.width = targetW;
+            src.height = targetH;
+            procSizeRef.current = { w: targetW, h: targetH };
+          }
+          ctx.drawImage(vid, 0, 0, targetW, targetH);
+          const imgData = ctx.getImageData(0, 0, targetW, targetH);
           const res = processFrameToAcousticMatrix(imgData, COLS, ROWS, 38);
           metricsRef.current = res.metrics;
 
@@ -482,7 +502,8 @@ export const BlindCompanionView: React.FC = () => {
         if (!src || cancelled || !sessionGuardRef.current.isValid(mySession)) return;
         const t0 = performance.now();
         try {
-          const res = await detectSpatialObjects(src, false, 'crosswalk');
+          const rawRes = await detectSpatialObjects(src, false, 'crosswalk');
+          const res = stabilizerRef.current.filter(rawRes);
           const tEnd = performance.now();
           const duration = tEnd - t0;
 
@@ -507,6 +528,37 @@ export const BlindCompanionView: React.FC = () => {
             };
             setDetections(res);
 
+            // Render live bounding boxes aligned to the native video aspect ratio
+            const ov = overlayCanvasRef.current;
+            const { w: pw, h: ph } = procSizeRef.current;
+            if (ov) {
+              if (ov.width !== pw || ov.height !== ph) {
+                ov.width = pw;
+                ov.height = ph;
+              }
+              const oCtx = ov.getContext('2d');
+              if (oCtx) {
+                oCtx.clearRect(0, 0, pw, ph);
+                res.forEach((det) => {
+                  const [bx, by, bw, bh] = det.bbox;
+                  const color = det.distance === '近距离' ? '#ff8a3d' : '#9fc9b0';
+                  oCtx.strokeStyle = color;
+                  oCtx.lineWidth = 2.4;
+                  oCtx.strokeRect(bx, by, bw, bh);
+
+                  const tag = `${det.direction} · ${det.labelZh} ${Math.round(det.score * 100)}%`;
+                  oCtx.font = '600 13px "JetBrains Mono", Consolas, sans-serif';
+                  const tw = oCtx.measureText(tag).width + 12;
+                  const tx = Math.max(4, Math.min(pw - tw - 4, bx));
+                  const ty = Math.max(22, by);
+                  oCtx.fillStyle = 'rgba(22, 21, 18, 0.88)';
+                  oCtx.fillRect(tx, ty - 22, tw, 22);
+                  oCtx.fillStyle = color;
+                  oCtx.fillText(tag, tx + 6, ty - 6);
+                });
+              }
+            }
+
             // Unified validity check before any audio output (P0-4)
             const usable = getUsableDetections(tEnd);
 
@@ -517,7 +569,7 @@ export const BlindCompanionView: React.FC = () => {
               );
               if (hit && audioScheduler.shouldAllowSpatialCue('finder', tEnd)) {
                 const [bx, , bw] = hit.bbox;
-                const normX = Math.max(0, Math.min(1, (bx + bw / 2) / PROC_W));
+                const normX = Math.max(0, Math.min(1, (bx + bw / 2) / pw));
                 const centeredness = 1 - Math.abs(normX - 0.5) * 2;
                 const closeness = Math.min(
                   1,
@@ -534,7 +586,7 @@ export const BlindCompanionView: React.FC = () => {
                 audioScheduler.shouldAllowSpatialCue('low_freq', tEnd)
               ) {
                 const [bx, , bw] = usable[0].bbox;
-                const normX = Math.max(0, Math.min(1, (bx + bw / 2) / PROC_W));
+                const normX = Math.max(0, Math.min(1, (bx + bw / 2) / pw));
                 spatialAudio.playBrushTone(normX, 0.88, {
                   scaleMode: 'pentatonic',
                   useHRTF: true,
@@ -693,8 +745,8 @@ export const BlindCompanionView: React.FC = () => {
   const isRunning = safeSnap.state === 'ACTIVE' || safeSnap.state === 'DEGRADED';
 
   return (
-    <div className="mx-auto max-w-xl space-y-5">
-      <canvas ref={sourceCanvasRef} width={PROC_W} height={PROC_H} className="hidden" />
+    <div className="mx-auto max-w-2xl space-y-5">
+      <canvas ref={sourceCanvasRef} width={640} height={480} className="hidden" />
 
       {/* Main Accessible Status & Primary Control */}
       <section className="panel p-5 space-y-4" aria-label="随身助行主控面板">
@@ -768,13 +820,19 @@ export const BlindCompanionView: React.FC = () => {
           </p>
         </div>
 
-        {/* Camera Viewport (Live only — NEVER draws simulated preset) */}
-        <div className="screen relative h-[195px] sm:h-[215px]">
+        {/* Camera Viewport (Full uncropped aspect ratio + live bounding-box overlay) */}
+        <div className="screen relative h-[320px] sm:h-[400px] flex items-center justify-center">
           <video
             ref={videoRef}
             playsInline
             muted
-            className={`w-full h-full object-cover ${
+            className={`w-full h-full object-contain ${
+              safeSnap.dataSource === 'REAL_CAMERA' ? 'block' : 'hidden'
+            }`}
+          />
+          <canvas
+            ref={overlayCanvasRef}
+            className={`pointer-events-none absolute inset-0 w-full h-full object-contain ${
               safeSnap.dataSource === 'REAL_CAMERA' ? 'block' : 'hidden'
             }`}
           />
