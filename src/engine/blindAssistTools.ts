@@ -1,18 +1,103 @@
-// Real-world Blind & Low-Vision Assistive Algorithms (100% On-Device, Zero Cloud)
-// 1. Traffic light color state (Oko-inspired red/yellow/green signal detector)
-// 2. Ambient light & center color detector (Seeing AI-inspired light/clothing helper)
-// 3. Hands-free Chinese voice command parser for eyes-free control
+// Experimental On-Device Assistive Utilities
+// 1. Traffic-light box pixel color classifier (EXPERIMENTAL color demo ONLY — NOT a street-crossing signal)
+// 2. Ambient light & center color detector
+// 3. Chinese voice command parser
 
-export type TrafficLightState = '红灯' | '黄灯' | '绿灯' | '未知';
+export type TrafficLightColor = '红色像素' | '黄色像素' | '绿色像素' | '未知';
+
+export interface TrafficLightAnalysis {
+  color: TrafficLightColor;
+  confidence: number; // 0..1
+  /** Explicitly never grants pedestrian street-crossing clearance */
+  isCrossingClearance: false;
+}
 
 /**
- * Inspect pixels inside a detected traffic-light bounding box to determine
- * whether red, yellow, or green lamp is illuminated.
+ * Pure pixel-array analyzer for unit testing (backlit, dark, glare, multi-lamp interference).
  */
+export function classifyTrafficLightPixels(data: Uint8ClampedArray): TrafficLightAnalysis {
+  let redScore = 0;
+  let yellowScore = 0;
+  let greenScore = 0;
+  let brightNeutralCount = 0;
+  const totalPixels = Math.max(1, data.length / 4);
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+
+    if (max > 235 && max - min < 22) {
+      brightNeutralCount++;
+      continue;
+    }
+    if (max < 115 || max - min < 50) continue;
+
+    if (r > 170 && g < 110 && b < 110) {
+      redScore += r - Math.max(g, b);
+    } else if (g > 160 && r < 120 && b < 145) {
+      greenScore += g - Math.max(r, b);
+    } else if (r > 180 && g > 145 && b < 105) {
+      yellowScore += (r + g) / 2 - b;
+    }
+  }
+
+  // Reject severe glare / overexposure
+  if (brightNeutralCount / totalPixels > 0.45) {
+    return { color: '未知', confidence: 0, isCrossingClearance: false };
+  }
+
+  const totalScore = redScore + yellowScore + greenScore;
+  const best = Math.max(redScore, yellowScore, greenScore);
+  if (best < 450 || totalScore === 0) {
+    return { color: '未知', confidence: 0, isCrossingClearance: false };
+  }
+
+  // Reject ambiguous multi-lamp / mixed interference where winner doesn't clearly dominate
+  const dominance = best / totalScore;
+  if (dominance < 0.68) {
+    return { color: '未知', confidence: Math.round(dominance * 100) / 100, isCrossingClearance: false };
+  }
+
+  const color: TrafficLightColor =
+    best === greenScore ? '绿色像素' : best === redScore ? '红色像素' : '黄色像素';
+  return { color, confidence: Math.round(dominance * 100) / 100, isCrossingClearance: false };
+}
+
+/**
+ * Multi-frame stabilizer: requires N consecutive agreeing frames before reporting a stable color;
+ * otherwise returns '未知' to avoid single-frame flicker.
+ */
+export class TrafficLightStabilizer {
+  private history: TrafficLightColor[] = [];
+  private requiredFrames: number;
+
+  constructor(requiredFrames = 3) {
+    this.requiredFrames = Math.max(2, requiredFrames);
+  }
+
+  public push(color: TrafficLightColor): TrafficLightColor {
+    this.history.push(color);
+    if (this.history.length > this.requiredFrames) {
+      this.history.shift();
+    }
+    if (this.history.length < this.requiredFrames) return '未知';
+    const first = this.history[0];
+    if (first === '未知') return '未知';
+    return this.history.every((c) => c === first) ? first : '未知';
+  }
+
+  public reset() {
+    this.history = [];
+  }
+}
+
 export function analyzeTrafficLightState(
   canvas: HTMLCanvasElement,
   bbox: [number, number, number, number]
-): TrafficLightState {
+): TrafficLightColor {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return '未知';
 
@@ -23,32 +108,7 @@ export function analyzeTrafficLightState(
   const h = Math.max(1, Math.min(canvas.height - y, Math.ceil(bh)));
 
   const data = ctx.getImageData(x, y, w, h).data;
-  let redScore = 0;
-  let yellowScore = 0;
-  let greenScore = 0;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    if (max < 110 || max - min < 45) continue; // Ignore dark housing & neutral gray
-
-    if (r > 165 && g < 115 && b < 115) {
-      redScore += r - Math.max(g, b);
-    } else if (g > 155 && r < 125 && b < 150) {
-      greenScore += g - Math.max(r, b);
-    } else if (r > 175 && g > 145 && b < 110) {
-      yellowScore += (r + g) / 2 - b;
-    }
-  }
-
-  const best = Math.max(redScore, yellowScore, greenScore);
-  if (best < 400) return '未知';
-  if (best === greenScore) return '绿灯';
-  if (best === redScore) return '红灯';
-  return '黄灯';
+  return classifyTrafficLightPixels(data).color;
 }
 
 export interface LightAndColorReport {

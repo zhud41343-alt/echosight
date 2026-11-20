@@ -304,8 +304,8 @@ export const DarkMaze: React.FC = () => {
         // Expanding sonar ripples
         ripplesRef.current = ripplesRef.current.filter((rp) => now - rp.createdAt < 1100);
         ripplesRef.current.forEach((rp) => {
-          const progress = (now - rp.createdAt) / 1100;
-          const radius = progress * 220;
+          const progress = Math.max(0, (now - rp.createdAt) / 1100);
+          const radius = Math.max(0.5, progress * 220);
           ctx.strokeStyle = `rgba(255, 138, 61, ${Math.max(0, 0.65 * (1 - progress))})`;
           ctx.lineWidth = 1.8;
           ctx.beginPath();

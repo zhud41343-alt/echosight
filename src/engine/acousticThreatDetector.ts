@@ -1,11 +1,89 @@
-// 360° On-Device Acoustic Rear/Side Threat Detector (Web Audio API Microphone Analyser)
-// Compensates for camera rear blind-spot by detecting sudden horn blasts (700-2800Hz)
-// or rapidly approaching vehicle rumble spikes (60-350Hz) from behind/sides.
+// Experimental Single-Channel Ambient Sound Anomaly Detector (Web Audio API)
+// IMPORTANT SCIENTIFIC LIMITATION:
+// A single smartphone microphone cannot perform true 360° sound source localization
+// and cannot reliably confirm an approaching vehicle from behind.
+// This module only detects sudden high-energy spectral anomalies (sharp mid-high spikes
+// or strong low-frequency surges) as an experimental auxiliary cue.
 
-export interface AcousticThreatEvent {
-  kind: 'horn' | 'approaching_noise';
-  levelDb: number;
+export interface AcousticAnomalyEvent {
+  kind: 'sharp_spike' | 'low_freq_surge';
+  peakEnergy: number;
   message: string;
+}
+
+export interface AcousticFrameMetrics {
+  avgTotal: number;
+  avgLow: number; // 60-350Hz average magnitude (0..255)
+  midHighPeak: number; // 700-2800Hz peak magnitude (0..255)
+  baseline: number;
+}
+
+export interface AcousticEvaluationSample {
+  id: string;
+  expectedAnomaly: boolean;
+  frame: AcousticFrameMetrics;
+}
+
+export interface AcousticEvaluationSummary {
+  total: number;
+  truePositives: number;
+  falsePositives: number;
+  trueNegatives: number;
+  falseNegatives: number;
+  falsePositiveRate: number;
+  falseNegativeRate: number;
+}
+
+/**
+ * Pure frame classifier for deterministic offline false-positive / false-negative evaluation.
+ */
+export function classifyAcousticFrame(frame: AcousticFrameMetrics): AcousticAnomalyEvent | null {
+  if (frame.midHighPeak > 195 && frame.midHighPeak > frame.baseline * 3.2) {
+    return {
+      kind: 'sharp_spike',
+      peakEnergy: Math.round(frame.midHighPeak),
+      message: '检测到突发尖锐环境声响（实验性提示，无法判断方向，请现场确认）。',
+    };
+  }
+  if (frame.avgLow > 140 && frame.avgLow > frame.baseline * 2.9) {
+    return {
+      kind: 'low_freq_surge',
+      peakEnergy: Math.round(frame.avgLow),
+      message: '检测到突发低频环境声响增强（实验性提示，无法判断方向，请现场确认）。',
+    };
+  }
+  return null;
+}
+
+/**
+ * Offline benchmark helper to measure false-positive and false-negative rates
+ * on recorded or synthetic acoustic frame datasets.
+ */
+export function evaluateAcousticDataset(
+  samples: AcousticEvaluationSample[]
+): AcousticEvaluationSummary {
+  let tp = 0;
+  let fp = 0;
+  let tn = 0;
+  let fn = 0;
+  for (const s of samples) {
+    const predicted = classifyAcousticFrame(s.frame) !== null;
+    if (s.expectedAnomaly && predicted) tp++;
+    else if (!s.expectedAnomaly && predicted) fp++;
+    else if (!s.expectedAnomaly && !predicted) tn++;
+    else fn++;
+  }
+  const negatives = fp + tn;
+  const positives = tp + fn;
+  return {
+    total: samples.length,
+    truePositives: tp,
+    falsePositives: fp,
+    trueNegatives: tn,
+    falseNegatives: fn,
+    falsePositiveRate: negatives > 0 ? Math.round((fp / negatives) * 1000) / 1000 : 0,
+    falseNegativeRate: positives > 0 ? Math.round((fn / positives) * 1000) / 1000 : 0,
+  };
 }
 
 export class AcousticThreatMonitor {
@@ -14,10 +92,10 @@ export class AcousticThreatMonitor {
   private analyser: AnalyserNode | null = null;
   private data: Uint8Array<ArrayBuffer> | null = null;
   private timer: number | null = null;
-  private baselineEnergy = 22;
+  private baselineEnergy = 24;
   private lastAlertAt = 0;
 
-  public async start(onThreat: (ev: AcousticThreatEvent) => void): Promise<boolean> {
+  public async start(onAnomaly: (ev: AcousticAnomalyEvent) => void): Promise<boolean> {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return false;
     }
@@ -25,7 +103,7 @@ export class AcousticThreatMonitor {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          noiseSuppression: false, // Keep raw ambient horn/engine spikes detectable
+          noiseSuppression: false,
           autoGainControl: false,
         },
         video: false,
@@ -48,10 +126,9 @@ export class AcousticThreatMonitor {
         if (!this.analyser || !this.data) return;
         this.analyser.getByteFrequencyData(this.data);
 
-        // Compute low-band (60-350Hz: vehicle engine/rumble) & mid-high horn band (700-2800Hz)
         let lowSum = 0;
         let lowCount = 0;
-        let hornPeak = 0;
+        let midHighPeak = 0;
         let totalSum = 0;
 
         for (let i = 1; i < this.data.length; i++) {
@@ -62,38 +139,26 @@ export class AcousticThreatMonitor {
             lowSum += v;
             lowCount++;
           } else if (hz >= 700 && hz <= 2800) {
-            if (v > hornPeak) hornPeak = v;
+            if (v > midHighPeak) midHighPeak = v;
           }
         }
 
         const avgTotal = totalSum / this.data.length;
         const avgLow = lowCount > 0 ? lowSum / lowCount : 0;
-
-        // Smoothly adapt ambient baseline
         this.baselineEnergy = this.baselineEnergy * 0.94 + avgTotal * 0.06;
 
         const now = performance.now();
-        if (now - this.lastAlertAt < 5500) return;
+        if (now - this.lastAlertAt < 6000) return;
 
-        // Sharp car/e-bike horn spike
-        if (hornPeak > 195 && hornPeak > this.baselineEnergy * 3.2) {
+        const ev = classifyAcousticFrame({
+          avgTotal,
+          avgLow,
+          midHighPeak,
+          baseline: this.baselineEnergy,
+        });
+        if (ev) {
           this.lastAlertAt = now;
-          onThreat({
-            kind: 'horn',
-            levelDb: Math.round(hornPeak / 2.5),
-            message: '注意四周和后方！检测到急促鸣笛声，请立刻靠边停步确认安全。',
-          });
-          return;
-        }
-
-        // Sudden loud approaching vehicle rumble from blind spot
-        if (avgLow > 135 && avgLow > this.baselineEnergy * 2.8) {
-          this.lastAlertAt = now;
-          onThreat({
-            kind: 'approaching_noise',
-            levelDb: Math.round(avgLow / 2.5),
-            message: '小心后方或侧面！检测到快速逼近的车辆轰鸣声，请先停一下。',
-          });
+          onAnomaly(ev);
         }
       }, 220);
 
