@@ -15,10 +15,43 @@ interface FaultScenario {
 
 const FAULT_SCENARIOS: FaultScenario[] = [
   {
+    id: 'null_frame',
+    label: '首帧尚未到达 / 画面冻结',
+    desc: '轨道虽为 live，但 lastFrameAt 为 null 或超时未推进',
+    legacyBehavior: 'V1/V2：将 lastFrameAt === null 误判为未过期，或靠重复 drawImage 伪造画面新鲜度，提前进入 ACTIVE。',
+    buildSignals: (now) => ({
+      ...createInitialSignals(),
+      requestedLive: true,
+      sessionStartedAt: now - 5000,
+      cameraPermission: 'granted',
+      cameraTrackLive: true,
+      lastFrameAt: null,
+      modelState: 'ready',
+      audioState: 'running',
+    }),
+  },
+  {
+    id: 'null_inference',
+    label: '模型就绪但尚未完成首次推理',
+    desc: 'lastInferenceAt === null，无有效 AI 输出',
+    legacyBehavior: 'V2：未检查 lastInferenceAt === null，在首次推理完成前即标记为 ACTIVE。',
+    buildSignals: (now) => ({
+      ...createInitialSignals(),
+      requestedLive: true,
+      sessionStartedAt: now - 2000,
+      cameraPermission: 'granted',
+      cameraTrackLive: true,
+      lastFrameAt: now - 100,
+      modelState: 'ready',
+      lastInferenceAt: null,
+      audioState: 'running',
+    }),
+  },
+  {
     id: 'cam_denied',
     label: '摄像头权限被拒绝',
     desc: '用户拒绝或浏览器拦截摄像头授权',
-    legacyBehavior: '旧版：静默回退绘制内置模拟斑马线并继续播报“右前方有车”，将模拟数据混入实时助行。',
+    legacyBehavior: 'V1：静默回退绘制内置模拟斑马线并播报“右前方有车”，将模拟数据混入实时助行。',
     buildSignals: () => ({
       ...createInitialSignals(),
       requestedLive: true,
@@ -29,40 +62,10 @@ const FAULT_SCENARIOS: FaultScenario[] = [
     }),
   },
   {
-    id: 'track_ended',
-    label: '摄像头中途断开 / 遮挡过期',
-    desc: '视频轨道中断或超过 2.5s 无新帧更新',
-    legacyBehavior: '旧版：仅检查 active === true，继续沿用旧帧或空数组，甚至在 24s 后播报“前方依然开阔”。',
-    buildSignals: (now) => ({
-      ...createInitialSignals(),
-      requestedLive: true,
-      cameraPermission: 'granted',
-      cameraTrackLive: true,
-      lastFrameAt: now - 3800,
-      modelState: 'ready',
-      audioState: 'running',
-    }),
-  },
-  {
-    id: 'model_failed',
-    label: '端侧神经网络加载失败',
-    desc: '弱网或 WebGL 异常导致 COCO-SSD 未就绪',
-    legacyBehavior: '旧版：loadOnDeviceAIModel 仍返回 ready: true，上层误以为 AI 正常并在空结果时播报安全。',
-    buildSignals: (now) => ({
-      ...createInitialSignals(),
-      requestedLive: true,
-      cameraPermission: 'granted',
-      cameraTrackLive: true,
-      lastFrameAt: now - 100,
-      modelState: 'failed',
-      audioState: 'running',
-    }),
-  },
-  {
     id: 'page_hidden',
     label: '手机锁屏 / 页面切入后台',
     desc: 'document.hidden === true，浏览器挂起媒体流',
-    legacyBehavior: '旧版：未监听 visibilitychange，界面仍显示“运行中”，误导用户以为支持后台持续导航。',
+    legacyBehavior: 'V1：未监听 visibilitychange，界面仍显示“运行中”，误导用户以为支持后台持续导航。',
     buildSignals: (now) => ({
       ...createInitialSignals(),
       requestedLive: true,
@@ -70,6 +73,7 @@ const FAULT_SCENARIOS: FaultScenario[] = [
       cameraTrackLive: true,
       lastFrameAt: now - 120,
       modelState: 'ready',
+      lastInferenceAt: now - 300,
       pageHidden: true,
       audioState: 'running',
     }),
@@ -78,74 +82,78 @@ const FAULT_SCENARIOS: FaultScenario[] = [
 
 const CLAIM_ROWS: Array<{
   claim: string;
-  status: string;
+  tier: string;
   evidence: string;
 }> = [
   {
-    claim: 'EchoSafe 失效保护状态机与数据隔离',
-    status: '已实现且已测试',
-    evidence: 'src/engine/echoSafe.ts + tests/echoSafe.test.ts 自动化单元测试通过',
+    claim: 'EchoSafe V3 严格新鲜度、SessionGuard 防异步回写与 Packet 有效期校验',
+    tier: '已实现且自动化验证',
+    evidence: 'src/engine/echoSafe.ts + tests/echoSafe.test.ts（含空时间戳、冻结、过期会话与竞态测试）',
   },
   {
-    claim: '统一语音/音频优先级调度（防覆盖与冷却）',
-    status: '已实现且已测试',
-    evidence: 'src/engine/audioScheduler.ts + tests/audioScheduler.test.ts 确定性测试通过',
+    claim: '无竞态音频优先级调度器（playbackId 防旧回调覆盖 + 统一单调时钟）',
+    tier: '已实现且自动化验证',
+    evidence: 'src/engine/audioScheduler.ts + tests/audioScheduler.test.ts',
   },
   {
-    claim: '单目测距输入校验与 MAE/P90 误差统计工具',
-    status: '仅有模拟验证',
-    evidence: 'src/engine/aiObjectDetector.ts + tests/distance.test.ts（0.5–10m 合成基准）；真实相机标定待实测',
+    claim: '失效保护文案（空检测绝不输出安全承诺、过街询问强制拒绝）',
+    tier: '已实现且自动化验证',
+    evidence: 'src/engine/xiaoGuangAssistant.ts + tests/safetyWording.test.ts',
   },
   {
-    claim: '单路麦克风环境异常声响检测（非 360° 定位）',
-    status: '仅有模拟验证',
-    evidence: 'src/engine/acousticThreatDetector.ts + tests/acoustic.test.ts；真实街道噪音误报率待实测',
+    claim: 'WAI-ARIA Tabs 键盘操作与多视口（1440×900 / 390×844 / 360×740）0 横向溢出',
+    tier: '已实际浏览器验证',
+    evidence: 'src/App.tsx + docs/REAL_BROWSER_TEST_REPORT.md（物理摄像头实测视觉 40fps / AI 1.2fps / 39ms）',
   },
   {
-    claim: '交通信号灯框内像素颜色识别（非过街判定）',
-    status: '仅有模拟验证',
-    evidence: 'src/engine/blindAssistTools.ts + tests/trafficLight.test.ts（逆光/眩光/多灯干扰用例）',
+    claim: '单目测距输入校验与 MAE/P90 误差统计工具（0.5–10m 合成基准）',
+    tier: '仅模拟验证',
+    evidence: 'src/engine/aiObjectDetector.ts + tests/distance.test.ts；未标定仅输出保守区间',
+  },
+  {
+    claim: '单路麦克风环境异常声响提示（非 360° 定位）与信号灯像素色态稳定器',
+    tier: '仅模拟验证',
+    evidence: 'src/engine/acousticThreatDetector.ts + src/engine/blindAssistTools.ts + tests/acousticAndTraffic.test.ts',
+  },
+  {
+    claim: '真实手机 iOS VoiceOver / Android TalkBack 读屏全流程测试',
+    tier: '尚未真实手机验证',
+    evidence: '当前测试环境无真实移动读屏设备，已如实标注待验证',
   },
   {
     claim: '真实视障用户受控环境共创实验',
-    status: '尚未完成',
-    evidence: '已在 docs/USER_STUDY_PROTOCOL.md 建立完整方案与知情同意框架，结果留空待实测',
-  },
-  {
-    claim: '手机锁屏后台持续摄像头导航',
-    status: '受浏览器或设备限制，当前无法实现',
-    evidence: 'Web 浏览器安全策略会在后台挂起摄像头采集；EchoSafe 会明确进入 UNAVAILABLE 状态',
+    tier: '尚未真实视障用户验证',
+    evidence: '完整伦理方案见 docs/USER_RESEARCH_PROTOCOL.md，真实结果栏位严格留空',
   },
 ];
 
 export const ValidationPanel: React.FC = () => {
-  const [faultId, setFaultId] = useState<string>('cam_denied');
+  const [faultId, setFaultId] = useState<string>('null_frame');
   const now = 100_000;
   const fault = FAULT_SCENARIOS.find((f) => f.id === faultId) || FAULT_SCENARIOS[0];
   const evaluated = evaluateEchoSafe(fault.buildSignals(now), now);
 
   return (
     <div className="space-y-6">
-      {/* Intro */}
       <div className="panel p-6">
         <div className="eyebrow">06 · Verification & Boundaries</div>
-        <h2 className="title-serif text-[22px] mt-1">技术验证、失效保护对比与能力边界</h2>
+        <h2 className="title-serif text-[22px] mt-1">EchoSafe V3 技术验证、故障对比与能力边界</h2>
         <p className="text-[13.5px] text-ink-2 mt-2 max-w-3xl leading-relaxed">
-          本页集中呈现 EchoSight 的工程可靠性验证。我们严格区分「真实摄像头数据」与「模拟演示数据」，
-          如实标注已测试项与待实测项，不将浏览器研究原型宣传为可替代白手杖的户外助行产品。
+          传统视觉转语音原型只关注“检测到了什么”，而 EchoSafe V3 进一步校验“数据是否来自真实相机、画面是否真正推进、
+          会话是否已失效、结果是否过期”。下表如实区分已验证与未验证层级，不将模拟测试等同于真机或真人验证。
         </p>
       </div>
 
-      {/* Interactive EchoSafe vs Legacy Fault Comparison */}
+      {/* Interactive Fault Comparison */}
       <div className="panel p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="eyebrow">Innovation 01 · EchoSafe Contrast</div>
             <h3 className="text-[16px] font-semibold text-ink mt-0.5">
-              失效保护对比演示：原始实现 vs EchoSafe 状态机
+              失效保护对比：历史实现 vs EchoSafe V3 状态机
             </h3>
           </div>
-          <span className="chip">点击下方故障场景实时计算</span>
+          <span className="chip">点击故障场景实时计算</span>
         </div>
 
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
@@ -165,17 +173,21 @@ export const ValidationPanel: React.FC = () => {
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="panel-sunken p-4 space-y-2 border-l-2 border-l-warn">
-            <div className="eyebrow text-warn">原始实现（高风险）</div>
+            <div className="eyebrow text-warn">历史实现（高风险）</div>
             <p className="text-[13px] text-ink-2 leading-relaxed">{fault.legacyBehavior}</p>
           </div>
           <div className="panel-sunken p-4 space-y-2 border-l-2 border-l-ok">
             <div className="flex items-center justify-between">
-              <span className="eyebrow text-ok">EchoSafe 状态机输出</span>
-              <span className="chip num">{evaluated.state}</span>
+              <span className="eyebrow text-ok">EchoSafe V3 输出</span>
+              <span className="chip num">
+                {evaluated.stateLabelZh} ({evaluated.state})
+              </span>
             </div>
             <p className="text-[13px] text-ink leading-relaxed">{evaluated.userSummary}</p>
             <div className="text-[11.5px] text-ink-3 num">
-              dataSource: {evaluated.dataSource} · canTrustLivePerception: {String(evaluated.canTrustLivePerception)}
+              dataSource: {evaluated.dataSource} · frameFresh: {String(evaluated.frameFresh)} ·
+              inferenceFresh: {String(evaluated.inferenceFresh)} · canTrustLivePerception:{' '}
+              {String(evaluated.canTrustLivePerception)}
             </div>
           </div>
         </div>
@@ -184,16 +196,16 @@ export const ValidationPanel: React.FC = () => {
       {/* Claim-Evidence Matrix */}
       <div className="panel overflow-hidden">
         <div className="px-6 pt-5 pb-4 border-b border-line flex items-center justify-between">
-          <h3 className="text-[15px] font-semibold text-ink">能力主张与验证证据矩阵</h3>
+          <h3 className="text-[15px] font-semibold text-ink">能力主张与分层验证证据矩阵</h3>
           <span className="eyebrow">Claim-Evidence Matrix</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-[12.5px] border-collapse">
             <thead>
               <tr className="border-b border-line bg-sunken/70 text-ink-2">
-                <th className="py-3 px-5 font-semibold">能力 / 机制</th>
-                <th className="py-3 px-4 font-semibold whitespace-nowrap">验证状态</th>
-                <th className="py-3 px-5 font-semibold">当前证据与边界</th>
+                <th className="py-3 px-5 font-semibold">能力 / 工程机制</th>
+                <th className="py-3 px-4 font-semibold whitespace-nowrap">验证层级</th>
+                <th className="py-3 px-5 font-semibold">仓库路径与边界说明</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -201,7 +213,7 @@ export const ValidationPanel: React.FC = () => {
                 <tr key={row.claim}>
                   <td className="py-3 px-5 font-medium text-ink">{row.claim}</td>
                   <td className="py-3 px-4 whitespace-nowrap">
-                    <span className="chip">{row.status}</span>
+                    <span className="chip">{row.tier}</span>
                   </td>
                   <td className="py-3 px-5 text-ink-2">{row.evidence}</td>
                 </tr>

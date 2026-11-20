@@ -1,8 +1,12 @@
-// Unified Audio & Speech Priority Scheduler
-// Prevents competing voice broadcasts across modules, enforces priority preemption
-// (EMERGENCY > USER_QUERY > AMBIENT), deduplication, cooldowns, and clean screen-reader coexistence.
+// Unified Audio & Speech Priority Scheduler (V3 — Race-Free)
+// Fixes P0-3:
+// - Unique monotonic playbackId per utterance so late onend/onerror callbacks from cancelled
+//   utterances can NEVER clobber a newer utterance's activeSpeaking / currentPriority state.
+// - Unified monotonic clock (no mixing of performance.now() and Date.now()).
+// - Coordinates spatial audio cues (finder / low-freq / continuous) with active speech & mute state.
 
 export type SpeechPriority = 'EMERGENCY' | 'USER_QUERY' | 'AMBIENT';
+export type SpatialCueKind = 'continuous' | 'finder' | 'low_freq';
 
 const PRIORITY_RANK: Record<SpeechPriority, number> = {
   EMERGENCY: 3,
@@ -16,19 +20,32 @@ export interface SpeechRequest {
   dedupeKey?: string;
   cooldownMs?: number;
   rate?: number;
-  now?: number; // injectable timestamp for deterministic testing
+  ttlMs?: number; // Drop queued item if older than ttlMs
+  now?: number; // Injectable monotonic timestamp for deterministic testing
 }
 
 export interface SpeechBackend {
   isAvailable: () => boolean;
   isSpeaking: () => boolean;
   cancel: () => void;
-  speak: (text: string, rate: number, onEnd: () => void) => void;
+  speak: (text: string, rate: number, onDone: () => void) => void;
 }
 
 export interface ScheduleResult {
   accepted: boolean;
-  reason: 'spoken' | 'queued' | 'preempted_and_spoken' | 'dropped_lower_priority' | 'dropped_cooldown' | 'muted' | 'unavailable';
+  playbackId?: number;
+  reason:
+    | 'spoken'
+    | 'queued'
+    | 'preempted_and_spoken'
+    | 'dropped_lower_priority'
+    | 'dropped_cooldown'
+    | 'muted'
+    | 'unavailable';
+}
+
+function defaultMonotonicClock(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 function createBrowserSpeechBackend(): SpeechBackend {
@@ -47,20 +64,26 @@ function createBrowserSpeechBackend(): SpeechBackend {
         }
       }
     },
-    speak: (text, rate, onEnd) => {
+    speak: (text, rate, onDone) => {
       if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-        onEnd();
+        onDone();
         return;
       }
       try {
         const u = new SpeechSynthesisUtterance(text);
         u.lang = 'zh-CN';
         u.rate = rate;
-        u.onend = onEnd;
-        u.onerror = onEnd;
+        let finished = false;
+        const finishOnce = () => {
+          if (finished) return;
+          finished = true;
+          onDone();
+        };
+        u.onend = finishOnce;
+        u.onerror = finishOnce;
         window.speechSynthesis.speak(u);
       } catch {
-        onEnd();
+        onDone();
       }
     },
   };
@@ -68,17 +91,23 @@ function createBrowserSpeechBackend(): SpeechBackend {
 
 export class AudioSpeechScheduler {
   private backend: SpeechBackend;
+  private clock: () => number;
+  private nextPlaybackId = 0;
+  private activePlaybackId: number | null = null;
   private currentPriority: SpeechPriority | null = null;
-  private activeSpeaking = false;
   private muted = false;
   private lastKeySpokenAt = new Map<string, number>();
   private lastAnyAmbientAt: number | null = null;
+  private lastSpatialCueAt = new Map<SpatialCueKind, number>();
   private queue: Array<{ req: SpeechRequest; enqueuedAt: number }> = [];
-  private listeners = new Set<(status: { available: boolean; muted: boolean; lastText: string }) => void>();
+  private listeners = new Set<
+    (status: { available: boolean; muted: boolean; lastText: string }) => void
+  >();
   private lastText = '';
 
-  constructor(backend?: SpeechBackend) {
+  constructor(backend?: SpeechBackend, clock: () => number = defaultMonotonicClock) {
     this.backend = backend ?? createBrowserSpeechBackend();
+    this.clock = clock;
   }
 
   public isAvailable(): boolean {
@@ -87,6 +116,10 @@ export class AudioSpeechScheduler {
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  public getCurrentPriority(): SpeechPriority | null {
+    return this.activePlaybackId !== null ? this.currentPriority : null;
   }
 
   public setMuted(muted: boolean) {
@@ -99,7 +132,8 @@ export class AudioSpeechScheduler {
 
   public clearAll() {
     this.queue = [];
-    this.activeSpeaking = false;
+    // Advance activePlaybackId to null so any late callbacks from cancelled speech are ignored
+    this.activePlaybackId = null;
     this.currentPriority = null;
     this.backend.cancel();
   }
@@ -116,6 +150,32 @@ export class AudioSpeechScheduler {
     this.listeners.forEach((fn) => fn(snap));
   }
 
+  /**
+   * Coordinates spatial audio cues (HRTF scan / finder beacon / low-freq ping) with active speech.
+   * Blocks spatial clutter during EMERGENCY/USER_QUERY speech or when muted.
+   */
+  public shouldAllowSpatialCue(kind: SpatialCueKind, now?: number): boolean {
+    if (this.muted) return false;
+    const t = now ?? this.clock();
+
+    // Never layer continuous scan sound over emergency or user-query speech
+    if (
+      kind === 'continuous' &&
+      this.activePlaybackId !== null &&
+      (this.currentPriority === 'EMERGENCY' || this.currentPriority === 'USER_QUERY')
+    ) {
+      return false;
+    }
+
+    const minGap = kind === 'continuous' ? 65 : kind === 'finder' ? 750 : 1200;
+    const prev = this.lastSpatialCueAt.get(kind);
+    if (prev !== undefined && t - prev < minGap) {
+      return false;
+    }
+    this.lastSpatialCueAt.set(kind, t);
+    return true;
+  }
+
   public schedule(req: SpeechRequest): ScheduleResult {
     const text = req.text.trim();
     if (!text) return { accepted: false, reason: 'dropped_cooldown' };
@@ -126,7 +186,7 @@ export class AudioSpeechScheduler {
       return { accepted: false, reason: 'unavailable' };
     }
 
-    const now = req.now ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const now = req.now ?? this.clock();
     const key = req.dedupeKey ?? text;
     const defaultCooldown =
       req.priority === 'EMERGENCY' ? 2500 : req.priority === 'USER_QUERY' ? 0 : 6000;
@@ -139,7 +199,6 @@ export class AudioSpeechScheduler {
       }
     }
 
-    // Global ambient rate limit so continuous narration never overwhelms ambient listening
     if (
       req.priority === 'AMBIENT' &&
       this.lastAnyAmbientAt !== null &&
@@ -148,25 +207,25 @@ export class AudioSpeechScheduler {
       return { accepted: false, reason: 'dropped_cooldown' };
     }
 
-    const isBusy = this.activeSpeaking || this.backend.isSpeaking();
+    const isBusy = this.activePlaybackId !== null;
     if (isBusy && this.currentPriority) {
       const incomingRank = PRIORITY_RANK[req.priority];
       const currentRank = PRIORITY_RANK[this.currentPriority];
 
       if (incomingRank < currentRank) {
-        // Never allow ambient chatter to interrupt emergency or user query
         return { accepted: false, reason: 'dropped_lower_priority' };
       }
 
       if (incomingRank > currentRank || req.priority === 'USER_QUERY') {
-        // Higher priority or direct user query preempts current utterance
+        // Invalidate current playbackId BEFORE cancel so late onend/onerror from old speech is ignored
+        this.activePlaybackId = null;
+        this.currentPriority = null;
         this.backend.cancel();
         this.queue = this.queue.filter((item) => PRIORITY_RANK[item.req.priority] >= incomingRank);
-        this.speakNow(req, key, now);
-        return { accepted: true, reason: 'preempted_and_spoken' };
+        const id = this.speakNow(req, key, now);
+        return { accepted: true, playbackId: id, reason: 'preempted_and_spoken' };
       }
 
-      // Same priority: queue only if EMERGENCY (keep max 1 pending)
       if (req.priority === 'EMERGENCY') {
         this.queue = [{ req, enqueuedAt: now }];
         return { accepted: true, reason: 'queued' };
@@ -174,12 +233,13 @@ export class AudioSpeechScheduler {
       return { accepted: false, reason: 'dropped_lower_priority' };
     }
 
-    this.speakNow(req, key, now);
-    return { accepted: true, reason: 'spoken' };
+    const id = this.speakNow(req, key, now);
+    return { accepted: true, playbackId: id, reason: 'spoken' };
   }
 
-  private speakNow(req: SpeechRequest, key: string, now: number) {
-    this.activeSpeaking = true;
+  private speakNow(req: SpeechRequest, key: string, now: number): number {
+    const id = ++this.nextPlaybackId;
+    this.activePlaybackId = id;
     this.currentPriority = req.priority;
     this.lastKeySpokenAt.set(key, now);
     if (req.priority === 'AMBIENT') {
@@ -189,13 +249,25 @@ export class AudioSpeechScheduler {
     this.notify();
 
     this.backend.speak(req.text, req.rate ?? 1.04, () => {
-      this.activeSpeaking = false;
+      // P0-3 Race Guard: ignore stale onend/onerror callbacks from previously cancelled utterances
+      if (this.activePlaybackId !== id) {
+        return;
+      }
+      this.activePlaybackId = null;
       this.currentPriority = null;
-      const next = this.queue.shift();
-      if (next) {
-        this.schedule({ ...next.req, now: Date.now() });
+
+      const tNow = this.clock();
+      while (this.queue.length > 0) {
+        const next = this.queue.shift()!;
+        const ttl = next.req.ttlMs ?? 4000;
+        if (tNow - next.enqueuedAt <= ttl) {
+          this.schedule({ ...next.req, now: tNow });
+          break;
+        }
       }
     });
+
+    return id;
   }
 }
 

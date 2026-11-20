@@ -1,7 +1,9 @@
-// EchoSafe — Unified Perception Reliability State Machine & Fail-Safe Evaluator
-// Ensures strict separation between live sensor inputs and demo data, tracks sensor/model/page
-// liveness & staleness, prevents concurrent inference pile-ups, and enforces fail-safe reporting
-// (never inferring "safe / clear / flat ground" from empty detections).
+// EchoSafe V3 — Unified Perception Reliability State Machine, Session Guard & Packet Validator
+// Fixes:
+// - P0-1: Never treats lastFrameAt === null or lastInferenceAt === null as fresh/ACTIVE;
+//         requires real frame advancement (not repeated drawImage) and at least one fresh inference.
+// - P0-2: SessionGuard generation tokens prevent stale async camera/model/inference writebacks.
+// - P0-4: PerceptionPacket + isPerceptionPacketUsable enforce uniform validity checks everywhere.
 
 export type SystemModeState =
   | 'IDLE'
@@ -11,18 +13,30 @@ export type SystemModeState =
   | 'UNAVAILABLE'
   | 'DEMO';
 
+export const STATE_LABELS_ZH: Record<SystemModeState, string> = {
+  IDLE: '未启动',
+  INITIALIZING: '正在准备',
+  ACTIVE: '实时感知运行中',
+  DEGRADED: '降级运行',
+  UNAVAILABLE: '当前不可用',
+  DEMO: '模拟演示模式',
+};
+
 export type PerceptionStatus = 'DETECTED' | 'UNKNOWN' | 'DEGRADED' | 'UNAVAILABLE';
 
-export type DataSourceKind = 'live_camera' | 'uploaded_image' | 'demo_preset' | 'none';
+export type DataSourceKind = 'REAL_CAMERA' | 'UPLOADED_IMAGE' | 'SIMULATED_SCENE' | 'UNAVAILABLE';
 
 export interface EchoSafeSignals {
   requestedLive: boolean;
   isDemoMode: boolean;
   initializing: boolean;
+  sessionStartedAt: number | null;
   cameraPermission: 'unknown' | 'granted' | 'denied' | 'unavailable';
   cameraTrackLive: boolean;
-  lastFrameAt: number | null; // ms timestamp
+  /** Timestamp of the last REAL video frame advance (NOT repeated drawImage) */
+  lastFrameAt: number | null;
   modelState: 'idle' | 'loading' | 'ready' | 'failed';
+  /** Timestamp of the last SUCCESSFUL AI inference on a real frame */
   lastInferenceAt: number | null;
   lastInferenceDurationMs: number | null;
   consecutiveInferenceFailures: number;
@@ -33,17 +47,19 @@ export interface EchoSafeSignals {
 
 export interface EchoSafeSnapshot {
   state: SystemModeState;
+  stateLabelZh: string;
   perceptionStatus: PerceptionStatus;
   dataSource: DataSourceKind;
   reasons: string[];
   userSummary: string;
   canTrustLivePerception: boolean;
-  frameStale: boolean;
-  inferenceStale: boolean;
+  frameFresh: boolean;
+  inferenceFresh: boolean;
   evaluatedAt: number;
 }
 
 export interface EchoSafeThresholds {
+  firstFrameGraceMs: number;
   frameStaleMs: number;
   inferenceStaleMs: number;
   inferenceTimeoutMs: number;
@@ -51,6 +67,7 @@ export interface EchoSafeThresholds {
 }
 
 export const DEFAULT_ECHOSAFE_THRESHOLDS: EchoSafeThresholds = {
+  firstFrameGraceMs: 4000,
   frameStaleMs: 2500,
   inferenceStaleMs: 4500,
   inferenceTimeoutMs: 3500,
@@ -62,6 +79,7 @@ export function createInitialSignals(): EchoSafeSignals {
     requestedLive: false,
     isDemoMode: false,
     initializing: false,
+    sessionStartedAt: null,
     cameraPermission: 'unknown',
     cameraTrackLive: false,
     lastFrameAt: null,
@@ -76,8 +94,11 @@ export function createInitialSignals(): EchoSafeSignals {
 }
 
 /**
- * Pure, deterministic evaluator for EchoSafe reliability state transitions.
- * Never treats `active === true` alone as healthy.
+ * Pure, conservative EchoSafe evaluator (V3).
+ * Guarantees:
+ * 1. lastFrameAt === null NEVER enters ACTIVE.
+ * 2. lastInferenceAt === null NEVER enters ACTIVE (enters DEGRADED while awaiting first inference).
+ * 3. Frozen video (no real frame advance > frameStaleMs) immediately enters UNAVAILABLE.
  */
 export function evaluateEchoSafe(
   signals: EchoSafeSignals,
@@ -86,54 +107,54 @@ export function evaluateEchoSafe(
 ): EchoSafeSnapshot {
   const reasons: string[] = [];
 
-  // 1. Explicit Demo Mode (strictly isolated from live perception)
   if (signals.isDemoMode) {
     return {
       state: 'DEMO',
+      stateLabelZh: STATE_LABELS_ZH.DEMO,
       perceptionStatus: 'UNKNOWN',
-      dataSource: 'demo_preset',
+      dataSource: 'SIMULATED_SCENE',
       reasons: ['当前处于明确标记的模拟演示模式，输出不代表真实周围环境。'],
-      userSummary: '演示模式（模拟画面，非真实环境）',
+      userSummary: '模拟演示模式（非真实摄像头画面）',
       canTrustLivePerception: false,
-      frameStale: false,
-      inferenceStale: false,
+      frameFresh: false,
+      inferenceFresh: false,
       evaluatedAt: now,
     };
   }
 
-  // 2. Idle
   if (!signals.requestedLive && !signals.initializing) {
     return {
       state: 'IDLE',
+      stateLabelZh: STATE_LABELS_ZH.IDLE,
       perceptionStatus: 'UNAVAILABLE',
-      dataSource: 'none',
-      reasons: ['感知系统尚未启动。'],
+      dataSource: 'UNAVAILABLE',
+      reasons: ['实时感知尚未启动。'],
       userSummary: '未启动',
       canTrustLivePerception: false,
-      frameStale: false,
-      inferenceStale: false,
+      frameFresh: false,
+      inferenceFresh: false,
       evaluatedAt: now,
     };
   }
 
-  // 3. Initializing
   if (signals.initializing) {
     return {
       state: 'INITIALIZING',
+      stateLabelZh: STATE_LABELS_ZH.INITIALIZING,
       perceptionStatus: 'UNKNOWN',
-      dataSource: 'none',
-      reasons: ['正在申请设备权限并加载端侧推理模型。'],
-      userSummary: '正在初始化权限与视觉模型',
+      dataSource: 'UNAVAILABLE',
+      reasons: ['正在申请设备权限并加载端侧模型。'],
+      userSummary: '正在准备权限与模型',
       canTrustLivePerception: false,
-      frameStale: false,
-      inferenceStale: false,
+      frameFresh: false,
+      inferenceFresh: false,
       evaluatedAt: now,
     };
   }
 
-  // 4. Hard unavailability checks (Fail-Safe)
+  // Hard unavailability checks
   if (signals.pageHidden) {
-    reasons.push('页面已切入后台，浏览器无法保证持续摄像头采集与后台助行。');
+    reasons.push('页面已切入后台，浏览器无法保证持续摄像头采集。');
   }
   if (signals.cameraPermission === 'denied') {
     reasons.push('摄像头权限被拒绝，无法采集真实环境画面。');
@@ -143,42 +164,85 @@ export function evaluateEchoSafe(
     reasons.push('摄像头视频轨道已中断或停止。');
   }
 
-  const frameStale =
-    signals.lastFrameAt !== null && now - signals.lastFrameAt > thresholds.frameStaleMs;
-  if (frameStale) {
-    reasons.push('视频画面已停止更新（数据过期）。');
-  }
-
-  if (
-    signals.pageHidden ||
-    signals.cameraPermission === 'denied' ||
-    signals.cameraPermission === 'unavailable' ||
-    !signals.cameraTrackLive ||
-    frameStale
-  ) {
+  if (reasons.length > 0) {
     return {
       state: 'UNAVAILABLE',
+      stateLabelZh: STATE_LABELS_ZH.UNAVAILABLE,
       perceptionStatus: 'UNAVAILABLE',
-      dataSource: 'none',
+      dataSource: 'UNAVAILABLE',
       reasons,
-      userSummary: reasons[0] || '实时感知不可用，请勿依赖当前输出。',
+      userSummary: reasons[0],
       canTrustLivePerception: false,
-      frameStale,
-      inferenceStale: true,
+      frameFresh: false,
+      inferenceFresh: false,
       evaluatedAt: now,
     };
   }
 
-  // 5. Degradation checks (camera is live, but AI / audio / mic / latency degraded)
-  const inferenceStale =
+  // P0-1: Strict frame freshness — null lastFrameAt is NEVER fresh
+  if (signals.lastFrameAt === null) {
+    const waitedMs =
+      signals.sessionStartedAt !== null ? Math.max(0, now - signals.sessionStartedAt) : Infinity;
+    if (waitedMs <= thresholds.firstFrameGraceMs) {
+      return {
+        state: 'INITIALIZING',
+        stateLabelZh: STATE_LABELS_ZH.INITIALIZING,
+        perceptionStatus: 'UNKNOWN',
+        dataSource: 'UNAVAILABLE',
+        reasons: ['等待摄像头首帧画面到达。'],
+        userSummary: '正在等待摄像头首帧画面',
+        canTrustLivePerception: false,
+        frameFresh: false,
+        inferenceFresh: false,
+        evaluatedAt: now,
+      };
+    }
+    return {
+      state: 'UNAVAILABLE',
+      stateLabelZh: STATE_LABELS_ZH.UNAVAILABLE,
+      perceptionStatus: 'UNAVAILABLE',
+      dataSource: 'UNAVAILABLE',
+      reasons: ['摄像头已打开但超时未收到有效视频帧。'],
+      userSummary: '未收到有效视频帧，实时感知不可用',
+      canTrustLivePerception: false,
+      frameFresh: false,
+      inferenceFresh: false,
+      evaluatedAt: now,
+    };
+  }
+
+  const frameAge = now - signals.lastFrameAt;
+  const frameFresh = frameAge >= 0 && frameAge <= thresholds.frameStaleMs;
+  if (!frameFresh) {
+    return {
+      state: 'UNAVAILABLE',
+      stateLabelZh: STATE_LABELS_ZH.UNAVAILABLE,
+      perceptionStatus: 'UNAVAILABLE',
+      dataSource: 'UNAVAILABLE',
+      reasons: ['视频画面已冻结或停止更新（数据过期）。'],
+      userSummary: '视频画面已冻结，实时感知不可用',
+      canTrustLivePerception: false,
+      frameFresh: false,
+      inferenceFresh: false,
+      evaluatedAt: now,
+    };
+  }
+
+  // Model & inference freshness checks (null lastInferenceAt is NEVER treated as fresh)
+  const inferenceFresh =
     signals.modelState === 'ready' &&
     signals.lastInferenceAt !== null &&
-    now - signals.lastInferenceAt > thresholds.inferenceStaleMs;
+    now - signals.lastInferenceAt >= 0 &&
+    now - signals.lastInferenceAt <= thresholds.inferenceStaleMs;
 
   if (signals.modelState === 'failed') {
-    reasons.push('端侧物体识别模型加载失败，当前仅剩基础边缘轮廓分析（无法识别具体物体）。');
-  } else if (signals.modelState === 'loading') {
-    reasons.push('端侧物体识别模型仍在加载中。');
+    reasons.push('端侧物体识别模型加载失败，当前无法识别具体物体。');
+  } else if (signals.modelState === 'loading' || signals.modelState === 'idle') {
+    reasons.push('端侧物体识别模型尚未就绪。');
+  } else if (signals.lastInferenceAt === null) {
+    reasons.push('模型已就绪，正在等待首次视觉推理完成。');
+  } else if (!inferenceFresh) {
+    reasons.push('视觉识别结果已过期，暂不输出确定性描述。');
   }
 
   if (signals.consecutiveInferenceFailures >= thresholds.maxConsecutiveFailures) {
@@ -188,47 +252,100 @@ export function evaluateEchoSafe(
     signals.lastInferenceDurationMs !== null &&
     signals.lastInferenceDurationMs > thresholds.inferenceTimeoutMs
   ) {
-    reasons.push(`单次推理耗时过长（${Math.round(signals.lastInferenceDurationMs)}ms），实时性下降。`);
-  }
-  if (inferenceStale) {
-    reasons.push('物体识别结果已过期，暂不输出确定性描述。');
+    reasons.push(`单次推理耗时过长（${Math.round(signals.lastInferenceDurationMs)}ms）。`);
   }
   if (signals.audioState !== 'running') {
-    reasons.push('音频输出未激活或被浏览器暂停，可能听不到提示音。');
+    reasons.push('浏览器音频未激活或已暂停，可能听不到提示音。');
   }
 
   if (reasons.length > 0) {
     return {
       state: 'DEGRADED',
+      stateLabelZh: STATE_LABELS_ZH.DEGRADED,
       perceptionStatus: 'DEGRADED',
-      dataSource: 'live_camera',
+      dataSource: 'REAL_CAMERA',
       reasons,
       userSummary: `降级运行：${reasons[0]}`,
       canTrustLivePerception: false,
-      frameStale: false,
-      inferenceStale,
+      frameFresh: true,
+      inferenceFresh,
       evaluatedAt: now,
     };
   }
 
-  // 6. Active & healthy
   return {
     state: 'ACTIVE',
-    perceptionStatus: 'UNKNOWN', // Caller upgrades to 'DETECTED' only when valid items are present
-    dataSource: 'live_camera',
+    stateLabelZh: STATE_LABELS_ZH.ACTIVE,
+    perceptionStatus: 'UNKNOWN',
+    dataSource: 'REAL_CAMERA',
     reasons: [],
-    userSummary: '实时感知运行中（辅助参考，不可替代盲杖与现场判断）',
+    userSummary: '实时感知运行中（仅作辅助参考，不可替代盲杖与现场判断）',
     canTrustLivePerception: true,
-    frameStale: false,
-    inferenceStale: false,
+    frameFresh: true,
+    inferenceFresh: true,
     evaluatedAt: now,
   };
 }
 
 /**
- * Single-flight async guard: prevents overlapping vision inferences from piling up
- * on slower mobile GPUs.
+ * P0-2: Monotonic session generation guard.
+ * Every start increments sessionId; stop/unmount/mode-switch invalidates it so
+ * late-resolving promises (camera permission, model load, inference) can NEVER write back.
  */
+export class SessionGuard {
+  private current = 0;
+  private active = false;
+
+  public begin(): number {
+    this.current += 1;
+    this.active = true;
+    return this.current;
+  }
+
+  public invalidate(): void {
+    this.current += 1;
+    this.active = false;
+  }
+
+  public isValid(sessionId: number): boolean {
+    return this.active && sessionId === this.current;
+  }
+
+  public get currentId(): number {
+    return this.current;
+  }
+
+  public get isActive(): boolean {
+    return this.active;
+  }
+}
+
+/**
+ * P0-4: Unified perception result packet with explicit provenance & TTL.
+ */
+export interface PerceptionPacket<T> {
+  dataSource: DataSourceKind;
+  sessionId: number;
+  capturedAt: number;
+  inferredAt: number;
+  expiresAt: number;
+  safeState: SystemModeState;
+  detections: T[];
+}
+
+export function isPerceptionPacketUsable<T>(
+  packet: PerceptionPacket<T> | null,
+  expectedSessionId: number,
+  now: number
+): boolean {
+  if (!packet) return false;
+  if (packet.dataSource !== 'REAL_CAMERA') return false;
+  if (packet.sessionId !== expectedSessionId) return false;
+  if (packet.safeState !== 'ACTIVE') return false;
+  if (now > packet.expiresAt || now < packet.inferredAt - 50) return false;
+  return true;
+}
+
 export class SingleFlightRunner {
   private inFlight = false;
 
@@ -255,19 +372,20 @@ export interface PerformanceTelemetry {
   aiFps: number;
   avgInferenceMs: number;
   p95InferenceMs: number;
+  maxInferenceMs: number;
   lastInferenceMs: number | null;
+  avgE2eMs: number;
+  p95E2eMs: number;
   modelLoadMs: number | null;
   mediaInterruptions: number;
   memoryUsedMb: number | null;
 }
 
-/**
- * Tracks real vision loop FPS separately from AI inference FPS & P95 latency.
- */
 export class RuntimeMetricsTracker {
   private visionTimestamps: number[] = [];
   private aiTimestamps: number[] = [];
   private inferenceDurations: number[] = [];
+  private e2eDurations: number[] = [];
   private modelLoadMs: number | null = null;
   private mediaInterruptions = 0;
 
@@ -279,15 +397,17 @@ export class RuntimeMetricsTracker {
     }
   }
 
-  public recordInference(now: number, durationMs: number) {
+  public recordInference(now: number, durationMs: number, e2eMs?: number) {
     this.aiTimestamps.push(now);
     const cutoff = now - 5000;
     while (this.aiTimestamps.length > 0 && this.aiTimestamps[0] < cutoff) {
       this.aiTimestamps.shift();
     }
     this.inferenceDurations.push(durationMs);
-    if (this.inferenceDurations.length > 50) {
-      this.inferenceDurations.shift();
+    if (this.inferenceDurations.length > 50) this.inferenceDurations.shift();
+    if (e2eMs !== undefined && Number.isFinite(e2eMs) && e2eMs >= 0) {
+      this.e2eDurations.push(e2eMs);
+      if (this.e2eDurations.length > 50) this.e2eDurations.shift();
     }
   }
 
@@ -309,38 +429,39 @@ export class RuntimeMetricsTracker {
       this.aiTimestamps.shift();
     }
 
-    const visionFps = Math.round((this.visionTimestamps.length / 2) * 10) / 10;
-    const aiFps = Math.round((this.aiTimestamps.length / 5) * 10) / 10;
-
-    let avgInferenceMs = 0;
-    let p95InferenceMs = 0;
-    if (this.inferenceDurations.length > 0) {
-      const sum = this.inferenceDurations.reduce((a, b) => a + b, 0);
-      avgInferenceMs = Math.round(sum / this.inferenceDurations.length);
-      const sorted = [...this.inferenceDurations].sort((a, b) => a - b);
+    const stats = (arr: number[]) => {
+      if (arr.length === 0) return { avg: 0, p95: 0, max: 0 };
+      const sum = arr.reduce((a, b) => a + b, 0);
+      const sorted = [...arr].sort((a, b) => a - b);
       const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
-      p95InferenceMs = Math.round(sorted[idx]);
-    }
+      return {
+        avg: Math.round(sum / arr.length),
+        p95: Math.round(sorted[idx]),
+        max: Math.round(sorted[sorted.length - 1]),
+      };
+    };
 
-    const lastInferenceMs =
-      this.inferenceDurations.length > 0
-        ? Math.round(this.inferenceDurations[this.inferenceDurations.length - 1])
-        : null;
+    const inf = stats(this.inferenceDurations);
+    const e2e = stats(this.e2eDurations);
 
     let memoryUsedMb: number | null = null;
-    const perfWithMem = performance as unknown as {
-      memory?: { usedJSHeapSize: number };
-    };
+    const perfWithMem = performance as unknown as { memory?: { usedJSHeapSize: number } };
     if (perfWithMem?.memory?.usedJSHeapSize) {
       memoryUsedMb = Math.round(perfWithMem.memory.usedJSHeapSize / (1024 * 1024));
     }
 
     return {
-      visionFps,
-      aiFps,
-      avgInferenceMs,
-      p95InferenceMs,
-      lastInferenceMs,
+      visionFps: Math.round((this.visionTimestamps.length / 2) * 10) / 10,
+      aiFps: Math.round((this.aiTimestamps.length / 5) * 10) / 10,
+      avgInferenceMs: inf.avg,
+      p95InferenceMs: inf.p95,
+      maxInferenceMs: inf.max,
+      lastInferenceMs:
+        this.inferenceDurations.length > 0
+          ? Math.round(this.inferenceDurations[this.inferenceDurations.length - 1])
+          : null,
+      avgE2eMs: e2e.avg,
+      p95E2eMs: e2e.p95,
       modelLoadMs: this.modelLoadMs,
       mediaInterruptions: this.mediaInterruptions,
       memoryUsedMb,
