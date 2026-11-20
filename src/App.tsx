@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Contrast, Headphones, Play, Volume2 } from 'lucide-react';
+import { Contrast, Play, Volume2 } from 'lucide-react';
+import { BlindCompanionView } from './components/BlindCompanionView';
 import { VisionScanner } from './components/VisionScanner';
 import { BlindSceneTheater } from './components/BlindSceneTheater';
 import { AcousticCanvas } from './components/AcousticCanvas';
@@ -7,6 +8,7 @@ import { DarkMaze } from './components/DarkMaze';
 import { TechArchitecture } from './components/TechArchitecture';
 import { spatialAudio } from './engine/spatialAudio';
 
+type AppView = 'companion' | 'studio';
 type TabId = 'scanner' | 'theater' | 'canvas' | 'maze' | 'arch';
 
 const TABS: { id: TabId; no: string; label: string; sub: string }[] = [
@@ -34,6 +36,7 @@ const WaveMark: React.FC<{ className?: string }> = ({ className }) => (
 );
 
 export function App() {
+  const [appView, setAppView] = useState<AppView>('companion');
   const [activeTab, setActiveTab] = useState<TabId>('scanner');
   const [calibrating, setCalibrating] = useState(false);
   const [demoProgress, setDemoProgress] = useState<number | null>(null);
@@ -115,11 +118,27 @@ export function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <span className="hidden lg:inline-flex items-center gap-1.5 text-[12.5px] text-ink-2 mr-1">
-              <Headphones className="h-4 w-4" />
-              建议佩戴耳机
-            </span>
+          <div className="flex items-center gap-2">
+            {/* Primary Mode Switch: Clean Blind Companion vs Full Research Studio */}
+            <div className="seg" role="group" aria-label="界面模式切换">
+              <button
+                type="button"
+                data-active={appView === 'companion'}
+                onClick={() => setAppView('companion')}
+                className="seg-item !py-1 !px-2.5 !text-[12px]"
+              >
+                随身助行
+              </button>
+              <button
+                type="button"
+                data-active={appView === 'studio'}
+                onClick={() => setAppView('studio')}
+                className="seg-item !py-1 !px-2.5 !text-[12px]"
+              >
+                专业实验台
+              </button>
+            </div>
+
             <button
               type="button"
               aria-pressed={highContrast}
@@ -128,12 +147,12 @@ export function App() {
               title="切换面向弱视用户的 WCAG AAA 纯黑高对比大字模式"
             >
               <Contrast className="h-3.5 w-3.5" />
-              {highContrast ? '标准纸面' : '弱视高对比'}
+              <span className="hidden sm:inline">{highContrast ? '标准纸面' : '弱视高对比'}</span>
             </button>
             <button
               type="button"
               onClick={handleCalibrateHeadphones}
-              className={`btn btn-sm ${calibrating ? 'btn-active' : ''}`}
+              className={`btn btn-sm hidden sm:inline-flex ${calibrating ? 'btn-active' : ''}`}
               title="依次在左、中、右播放提示音，确认耳机左右声道"
             >
               <span className={`led ${calibrating ? 'led-on' : ''}`} />
@@ -145,6 +164,12 @@ export function App() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-5">
+        {appView === 'companion' ? (
+          <section className="py-6 sm:py-8">
+            <BlindCompanionView />
+          </section>
+        ) : (
+          <>
         {/* Hero (shown on primary scanner tab to keep other workspaces single-screen) */}
         {activeTab === 'scanner' && (
           <section className="pt-7 pb-6 border-b border-line space-y-5">
@@ -271,6 +296,8 @@ export function App() {
           {activeTab === 'maze' && <DarkMaze />}
           {activeTab === 'arch' && <TechArchitecture />}
         </section>
+          </>
+        )}
       </main>
 
       {/* Footer */}

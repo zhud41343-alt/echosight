@@ -1,22 +1,29 @@
 // On-Device Multimodal AI Object Detector (TensorFlow.js COCO-SSD + Offline Spatial Fallback)
-// Full 80-class COCO Chinese vocabulary, size-aware distance estimation, hazard prioritization,
-// and delta-aware Chinese voice broadcast designed for real blind / low-vision navigation.
+// Features:
+// - Full 80-class COCO Chinese vocabulary
+// - Monocular pinhole camera distance estimation in meters (up to ~12m for vehicles/people)
+// - 5-sector + clock-face directional localization
+// - Hazard prioritization & delta-aware warm Chinese voice guidance
 
 import type { PresetSceneId } from './visionProcessor';
 import { analyzeTrafficLightState } from './blindAssistTools';
+
+export type SpatialDirection = '正左侧' | '左前方' | '正前方' | '右前方' | '正右侧';
 
 export interface SpatialDetection {
   labelEn: string;
   labelZh: string;
   score: number; // 0..1
   bbox: [number, number, number, number]; // [x, y, w, h]
-  direction: '左前方' | '正前方' | '右前方';
+  direction: SpatialDirection;
+  clockFace: string; // e.g. '10点钟'
   distance: '近距离' | '中距离' | '较远处';
+  distanceMeters: number; // Estimated distance in meters (e.g. 1.2, 4.5)
+  distanceText: string; // e.g. '约1.2米'
   priority: 'danger' | 'obstacle' | 'normal';
   source: 'tfjs' | 'local-topology';
 }
 
-// Complete 80-class COCO vocabulary in natural Chinese
 export const COCO_ZH_MAP: Record<string, string> = {
   person: '行人',
   bicycle: '自行车',
@@ -100,6 +107,46 @@ export const COCO_ZH_MAP: Record<string, string> = {
   toothbrush: '牙刷',
 };
 
+// Typical real-world vertical height in meters for pinhole monocular distance estimation:
+// D ≈ (H_real * focalPx) / bboxHeightPx
+const REAL_HEIGHT_M: Record<string, number> = {
+  person: 1.68,
+  bicycle: 1.05,
+  car: 1.5,
+  motorcycle: 1.15,
+  bus: 3.0,
+  train: 3.4,
+  truck: 2.8,
+  'traffic light': 0.9,
+  'fire hydrant': 0.85,
+  'stop sign': 0.75,
+  'parking meter': 1.2,
+  bench: 0.8,
+  dog: 0.55,
+  cat: 0.3,
+  backpack: 0.45,
+  suitcase: 0.65,
+  chair: 0.85,
+  couch: 0.85,
+  'potted plant': 0.65,
+  bed: 0.65,
+  'dining table': 0.75,
+  toilet: 0.75,
+  tv: 0.55,
+  laptop: 0.28,
+  'cell phone': 0.15,
+  refrigerator: 1.75,
+  cup: 0.13,
+  bottle: 0.22,
+  'wine glass': 0.18,
+  bowl: 0.1,
+  book: 0.22,
+  vase: 0.28,
+  scissors: 0.16,
+  knife: 0.22,
+  doorway: 2.0,
+};
+
 const DANGER_CLASSES = new Set([
   'car',
   'bus',
@@ -129,38 +176,13 @@ const OBSTACLE_CLASSES = new Set([
   'doorway',
 ]);
 
-// Physical-size groups for more realistic monocular distance estimation
-const SMALL_OBJECTS = new Set([
-  'cup',
-  'bottle',
-  'wine glass',
-  'cell phone',
-  'mouse',
-  'remote',
-  'book',
-  'bowl',
-  'apple',
-  'banana',
-  'orange',
-  'scissors',
-  'knife',
-  'fork',
-  'spoon',
-  'toothbrush',
-  'clock',
-  'vase',
-]);
-
-const LARGE_OBJECTS = new Set([
-  'car',
-  'bus',
-  'truck',
-  'train',
-  'bed',
-  'couch',
-  'dining table',
-  'refrigerator',
-]);
+export function formatDistanceMeters(meters: number): string {
+  const clamped = Math.max(0.4, Math.min(15, meters));
+  if (clamped < 1.0) return `不到1米`;
+  if (clamped < 3.0) return `约${clamped.toFixed(1)}米`;
+  if (clamped < 10.0) return `约${Math.round(clamped)}米`;
+  return `约10米外`;
+}
 
 function computeSpatialMeta(
   labelEn: string,
@@ -168,31 +190,45 @@ function computeSpatialMeta(
   canvasW: number,
   canvasH: number
 ): {
-  direction: '左前方' | '正前方' | '右前方';
+  direction: SpatialDirection;
+  clockFace: string;
   distance: '近距离' | '中距离' | '较远处';
+  distanceMeters: number;
+  distanceText: string;
   priority: 'danger' | 'obstacle' | 'normal';
 } {
   const [x, , w, h] = bbox;
   const centerX = (x + w / 2) / canvasW;
-  const areaRatio = (w * h) / (canvasW * canvasH);
 
-  const direction: '左前方' | '正前方' | '右前方' =
-    centerX < 0.36 ? '左前方' : centerX > 0.64 ? '右前方' : '正前方';
-
-  // Size-calibrated thresholds: a cup filling 6% of frame is already within arm's reach,
-  // whereas a bus filling 6% of frame is still fairly far away.
-  let nearThresh = 0.15;
-  let midThresh = 0.045;
-  if (SMALL_OBJECTS.has(labelEn)) {
-    nearThresh = 0.065;
-    midThresh = 0.02;
-  } else if (LARGE_OBJECTS.has(labelEn)) {
-    nearThresh = 0.24;
-    midThresh = 0.08;
+  let direction: SpatialDirection = '正前方';
+  let clockFace = '12点方向';
+  if (centerX < 0.2) {
+    direction = '正左侧';
+    clockFace = '9点方向';
+  } else if (centerX < 0.39) {
+    direction = '左前方';
+    clockFace = '10点方向';
+  } else if (centerX <= 0.61) {
+    direction = '正前方';
+    clockFace = '12点方向';
+  } else if (centerX <= 0.8) {
+    direction = '右前方';
+    clockFace = '2点方向';
+  } else {
+    direction = '正右侧';
+    clockFace = '3点方向';
   }
 
+  // Smartphone rear camera typical vertical FOV ≈ 54° -> focalPx ≈ canvasH / (2 * tan(27°)) ≈ canvasH * 0.98
+  const focalPx = canvasH * 0.98;
+  const realH = REAL_HEIGHT_M[labelEn] ?? 0.65;
+  const safeBboxH = Math.max(12, h);
+  const rawMeters = (realH * focalPx) / safeBboxH;
+  const distanceMeters = Math.round(Math.max(0.4, Math.min(15, rawMeters)) * 10) / 10;
+  const distanceText = formatDistanceMeters(distanceMeters);
+
   const distance: '近距离' | '中距离' | '较远处' =
-    areaRatio >= nearThresh ? '近距离' : areaRatio >= midThresh ? '中距离' : '较远处';
+    distanceMeters <= 2.0 ? '近距离' : distanceMeters <= 5.0 ? '中距离' : '较远处';
 
   const priority: 'danger' | 'obstacle' | 'normal' = DANGER_CLASSES.has(labelEn)
     ? 'danger'
@@ -200,7 +236,7 @@ function computeSpatialMeta(
       ? 'obstacle'
       : 'normal';
 
-  return { direction, distance, priority };
+  return { direction, clockFace, distance, distanceMeters, distanceText, priority };
 }
 
 type CocoModel = {
@@ -221,8 +257,8 @@ export async function loadOnDeviceAIModel(
   if (loadedModel) {
     onStatus?.(
       loadedModelVariant === 'mobilenet_v2'
-        ? '高精度 MobileNet v2 就绪（支持 80 类物体，本地 WebGL 推理）'
-        : '轻量 COCO-SSD 就绪（支持 80 类物体，本地 WebGL 推理）'
+        ? '高精度 MobileNet v2 就绪（80 类物体 · 远距米数测距）'
+        : '轻量 COCO-SSD 就绪（80 类物体 · 远距米数测距）'
     );
     return { ready: true, fallback: false };
   }
@@ -232,16 +268,16 @@ export async function loadOnDeviceAIModel(
     onStatus?.('正在启动本地 TensorFlow.js GPU 推理引擎...');
     const tf = await import('@tensorflow/tfjs');
     await tf.ready();
-    onStatus?.('正在加载高精度 COCO-SSD（MobileNet v2，80 类物体）...');
+    onStatus?.('正在加载高精度视觉模型（支持 80 类物体与远距测距）...');
     const cocoSsd = await import('@tensorflow-models/coco-ssd');
     try {
       loadedModel = (await cocoSsd.load({ base: 'mobilenet_v2' })) as unknown as CocoModel;
       loadedModelVariant = 'mobilenet_v2';
-      onStatus?.('高精度 MobileNet v2 就绪（支持 80 类物体，本地 WebGL 推理）');
+      onStatus?.('高精度 MobileNet v2 就绪（80 类物体 · 远距米数测距）');
     } catch {
       loadedModel = (await cocoSsd.load({ base: 'lite_mobilenet_v2' })) as unknown as CocoModel;
       loadedModelVariant = 'lite_mobilenet_v2';
-      onStatus?.('轻量 COCO-SSD 就绪（支持 80 类物体，本地 WebGL 推理）');
+      onStatus?.('轻量 COCO-SSD 就绪（80 类物体 · 远距米数测距）');
     }
     return { ready: true, fallback: false };
   } catch {
@@ -260,11 +296,14 @@ function getProceduralFallbackDetections(
     return [
       {
         labelEn: 'car',
-        labelZh: '来向车辆障碍',
+        labelZh: '来向车辆',
         score: 0.91,
         bbox: [w * 0.67, h * 0.43, w * 0.26, h * 0.28],
         direction: '右前方',
+        clockFace: '2点方向',
         distance: '近距离',
+        distanceMeters: 2.2,
+        distanceText: '约2.2米',
         priority: 'danger',
         source: 'local-topology',
       },
@@ -274,7 +313,10 @@ function getProceduralFallbackDetections(
         score: 0.94,
         bbox: [w * 0.11, h * 0.11, w * 0.1, h * 0.25],
         direction: '左前方',
+        clockFace: '10点方向',
         distance: '中距离',
+        distanceMeters: 4.5,
+        distanceText: '约5米',
         priority: 'obstacle',
         source: 'local-topology',
       },
@@ -284,21 +326,27 @@ function getProceduralFallbackDetections(
     return [
       {
         labelEn: 'dining table',
-        labelZh: '桌椅障碍物',
+        labelZh: '餐桌障碍',
         score: 0.92,
         bbox: [w * 0.07, h * 0.3, w * 0.36, h * 0.58],
         direction: '左前方',
+        clockFace: '10点方向',
         distance: '近距离',
+        distanceMeters: 1.3,
+        distanceText: '约1.3米',
         priority: 'obstacle',
         source: 'local-topology',
       },
       {
         labelEn: 'doorway',
-        labelZh: '明亮通道/门框',
+        labelZh: '明亮门框通道',
         score: 0.89,
         bbox: [w * 0.55, h * 0.13, w * 0.24, h * 0.68],
         direction: '右前方',
+        clockFace: '2点方向',
         distance: '中距离',
+        distanceMeters: 2.8,
+        distanceText: '约2.8米',
         priority: 'obstacle',
         source: 'local-topology',
       },
@@ -312,7 +360,10 @@ function getProceduralFallbackDetections(
         score: 0.95,
         bbox: [w * 0.72, h * 0.12, w * 0.12, h * 0.2],
         direction: '右前方',
+        clockFace: '2点方向',
         distance: '较远处',
+        distanceMeters: 10,
+        distanceText: '约10米外',
         priority: 'normal',
         source: 'local-topology',
       },
@@ -322,7 +373,10 @@ function getProceduralFallbackDetections(
         score: 0.9,
         bbox: [w * 0.15, h * 0.32, w * 0.7, h * 0.48],
         direction: '正前方',
+        clockFace: '12点方向',
         distance: '中距离',
+        distanceMeters: 4.0,
+        distanceText: '约4米',
         priority: 'normal',
         source: 'local-topology',
       },
@@ -335,7 +389,10 @@ function getProceduralFallbackDetections(
       score: 0.96,
       bbox: [w * 0.34, h * 0.25, w * 0.32, h * 0.5],
       direction: '正前方',
+      clockFace: '12点方向',
       distance: '中距离',
+      distanceMeters: 2.5,
+      distanceText: '约2.5米',
       priority: 'normal',
       source: 'local-topology',
     },
@@ -344,10 +401,11 @@ function getProceduralFallbackDetections(
 
 function rankDetections(items: SpatialDetection[]): SpatialDetection[] {
   const prioWeight = { danger: 3, obstacle: 2, normal: 1 };
-  const distWeight = { 近距离: 3, 中距离: 2, 较远处: 1 };
   return [...items].sort((a, b) => {
-    const scoreA = prioWeight[a.priority] * 10 + distWeight[a.distance] * 3 + a.score;
-    const scoreB = prioWeight[b.priority] * 10 + distWeight[b.distance] * 3 + b.score;
+    const proxA = 10 / Math.max(0.5, a.distanceMeters);
+    const proxB = 10 / Math.max(0.5, b.distanceMeters);
+    const scoreA = prioWeight[a.priority] * 8 + proxA + a.score;
+    const scoreB = prioWeight[b.priority] * 8 + proxB + b.score;
     return scoreB - scoreA;
   });
 }
@@ -359,7 +417,8 @@ export async function detectSpatialObjects(
 ): Promise<SpatialDetection[]> {
   if (loadedModel && !loadFailed) {
     try {
-      const preds = await loadedModel.detect(canvas, 8, 0.42);
+      // Lower minScore to 0.30 so distant pedestrians, cars, and traffic lights (5-12m) are caught earlier
+      const preds = await loadedModel.detect(canvas, 10, 0.3);
       if (preds.length > 0) {
         const mapped: SpatialDetection[] = preds.map((p) => {
           const meta = computeSpatialMeta(p.class, p.bbox, canvas.width, canvas.height);
@@ -376,7 +435,10 @@ export async function detectSpatialObjects(
             score: p.score,
             bbox: p.bbox,
             direction: meta.direction,
+            clockFace: meta.clockFace,
             distance: meta.distance,
+            distanceMeters: meta.distanceMeters,
+            distanceText: meta.distanceText,
             priority: meta.priority,
             source: 'tfjs',
           };
@@ -395,14 +457,14 @@ export async function detectSpatialObjects(
   return [];
 }
 
-export function speakCue(text: string) {
+export function speakCue(text: string, rate = 1.04) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   if (!text.trim()) return;
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-CN';
-    u.rate = 1.06;
+    u.rate = rate;
     window.speechSynthesis.speak(u);
   } catch {
     // Ignore speech errors
@@ -413,37 +475,39 @@ let lastSpokenAt = 0;
 let lastSpokenSignature = '';
 
 /**
- * Delta-aware spatial speech: avoids repeating identical announcements every few seconds
- * unless the scene changed, a near-distance hazard is present, or `force` is true.
+ * Delta-aware natural Chinese guidance with exact meter distances.
  */
 export function speakSpatialDetections(
   detections: SpatialDetection[],
   force = false,
   fallbackNavigationCue?: string
-) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+): string | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
   const now = performance.now();
 
   if (detections.length === 0) {
-    if (!force && !fallbackNavigationCue) return;
-    if (!force && now - lastSpokenAt < 8000) return;
-    const text = fallbackNavigationCue || '当前画面未识别到常见物体';
-    if (!force && text === lastSpokenSignature && now - lastSpokenAt < 14000) return;
+    if (!force && !fallbackNavigationCue) return null;
+    if (!force && now - lastSpokenAt < 7500) return null;
+    const text = fallbackNavigationCue || '前方视野比较空旷，暂时没有发现明显障碍物，可以平稳往前走。';
+    if (!force && text === lastSpokenSignature && now - lastSpokenAt < 14000) return null;
     lastSpokenAt = now;
     lastSpokenSignature = text;
     speakCue(text);
-    return;
+    return text;
   }
 
   const top = detections.slice(0, 3);
-  const signature = top.map((d) => `${d.direction}-${d.distance}-${d.labelZh}`).join('|');
-  const hasNearHazard = top.some((d) => d.priority === 'danger' && d.distance === '近距离');
+  const signature = top
+    .map((d) => `${d.direction}-${Math.round(d.distanceMeters)}-${d.labelZh}`)
+    .join('|');
+  const hasNearHazard = top.some((d) => d.priority === 'danger' && d.distanceMeters <= 3.5);
 
   if (!force) {
-    const minInterval = hasNearHazard ? 3200 : 4800;
-    if (now - lastSpokenAt < minInterval) return;
-    // If scene hasn't changed, stay quiet for 12s to avoid nagging the user
-    if (signature === lastSpokenSignature && !hasNearHazard && now - lastSpokenAt < 12000) return;
+    const minInterval = hasNearHazard ? 3000 : 4800;
+    if (now - lastSpokenAt < minInterval) return null;
+    if (signature === lastSpokenSignature && !hasNearHazard && now - lastSpokenAt < 12000) {
+      return null;
+    }
   }
 
   lastSpokenAt = now;
@@ -451,10 +515,11 @@ export function speakSpatialDetections(
 
   const summary = top
     .map((d) => {
-      const prefix = d.priority === 'danger' && d.distance === '近距离' ? '注意，' : '';
-      return `${prefix}${d.direction}${d.distance}有${d.labelZh}`;
+      const prefix = d.priority === 'danger' && d.distanceMeters <= 3.5 ? '小心，' : '';
+      return `${prefix}${d.direction}${d.distanceText}有${d.labelZh}`;
     })
     .join('；');
 
   speakCue(summary);
+  return summary;
 }

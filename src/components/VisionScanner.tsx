@@ -267,7 +267,7 @@ export const VisionScanner: React.FC = () => {
             dCtx.strokeRect(bx, by, bw, bh);
 
             const prefix = isLockedTarget ? '[锁定] ' : '';
-            const tag = `${prefix}${det.direction} · ${det.labelZh} ${Math.round(det.score * 100)}%`;
+            const tag = `${prefix}${det.direction} · ${det.distanceText} · ${det.labelZh}`;
             dCtx.font = '600 11px "JetBrains Mono", Consolas, monospace';
             const tw = dCtx.measureText(tag).width + 10;
             const tx = Math.max(4, Math.min(CANVAS_W - tw - 4, bx));
@@ -972,7 +972,7 @@ export const VisionScanner: React.FC = () => {
                 <span key={idx} className="chip">
                   <span className="font-semibold text-signal-ink">{d.direction}</span>
                   <span>·</span>
-                  <span>{d.distance}</span>
+                  <span className="num text-ink">{d.distanceText}</span>
                   <span>·</span>
                   <strong className="text-ink">{d.labelZh}</strong>
                   <span className="num text-[11px] text-ink-3">{Math.round(d.score * 100)}%</span>
@@ -1120,7 +1120,16 @@ export const VisionScanner: React.FC = () => {
               {/* AI Semantic Object Blips */}
               {aiEnabled &&
                 detections.map((d, i) => {
-                  const deg = d.direction === '左前方' ? -44 : d.direction === '右前方' ? 44 : 0;
+                  const deg =
+                    d.direction === '正左侧'
+                      ? -58
+                      : d.direction === '左前方'
+                        ? -34
+                        : d.direction === '正前方'
+                          ? 0
+                          : d.direction === '右前方'
+                            ? 34
+                            : 58;
                   const rad = (deg * Math.PI) / 180;
                   const distR = d.distance === '近距离' ? 42 : d.distance === '中距离' ? 68 : 90;
                   const dx = 140 + Math.sin(rad) * distR;
