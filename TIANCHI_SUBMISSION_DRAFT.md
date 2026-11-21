@@ -66,6 +66,11 @@
 
 ---
 
-## 五、作品截图展示
+## 五、作品实机运行截图展示
 
-> （发帖前插入 4 张实机截图：1. 随身助行模式手机端大视窗 + 实时识别框；2. 专业实验台「01 声画扫描」Sobel 边缘 + 180° 雷达 + FFT 频谱；3.「02 场景剧场」或「06 技术验证」EchoSafe 对比；4. 高对比模式或 Qoder Sites 部署界面）
+1. **前后端打通：浏览器端自研 EchoDepthNet ONNX 实时神经深度热力图（实测 `51ms`）**  
+   ![EchoDepthNet ONNX 实时深度热力图](docs/screenshots/echodepth_onnx_live.png)
+2. **移动端 `360×740` 随身助行模式（极简大字 + 零横向溢出 + 失效保护）**  
+   ![移动端随身助行界面](docs/screenshots/mobile_companion_360.png)
+3. **EchoDepthNet 三模型消融四联可视化图（RGB / 真值近场深度 / 预测深度 / 16×48 声学矩阵）**  
+   ![EchoDepthNet 四联可视化图](research/outputs/paper_figure_preview.png)

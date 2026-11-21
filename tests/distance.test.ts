@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildSpatialDetectionNotification,
   CameraCalibration,
   computeBboxIoU,
   computeCameraCalibrationFromDetection,
@@ -199,5 +200,25 @@ describe('Monocular distance estimation & P0-1 SpatialObjectTracker', () => {
         canvasH: 480,
       }).ok
     ).toBe(false);
+  });
+
+  it('V8 UX: SpatialObjectTracker applies EMA bbox smoothing and buildSpatialDetectionNotification produces concise natural speech', () => {
+    const tracker = new SpatialObjectTracker();
+    const f1 = makeDet('chair', [100, 150, 100, 140], 0.60);
+    const f2 = makeDet('chair', [120, 150, 100, 140], 0.60);
+    tracker.update([f1], W, H, 1);
+    const res = tracker.update([f2], W, H, 2);
+    expect(res.length).toBe(1);
+    // EMA smoothing (alpha=0.62): 100 * 0.38 + 120 * 0.62 = 112.4
+    expect(res[0].bbox[0]).toBeCloseTo(112.4, 1);
+
+    // Concise ambient speech: max 2 items, natural wording without repeating "（未标定粗估）"
+    const d1 = makeDet('person', [200, 100, 100, 200], 0.85);
+    const d2 = makeDet('chair', [50, 150, 90, 120], 0.72);
+    const d3 = makeDet('cup', [400, 180, 40, 60], 0.68);
+    const payload = buildSpatialDetectionNotification([d1, d2, d3], false);
+    expect(payload).not.toBeNull();
+    expect(payload!.text).not.toContain('未标定粗估');
+    expect(payload!.text.split('；').length).toBe(2);
   });
 });

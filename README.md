@@ -4,8 +4,16 @@
 > - **线上备用体验（GitHub Pages）**：https://zhud41343-alt.github.io/echosight/
 > - **重要定位声明**：EchoSight 是浏览器端跨模态辅助感知与感官替代研究原型，**不可替代白手杖、导盲犬、定向行走（O&M）训练或现场交通安全判断**。
 
+## 实机运行截图与前后端一体化展示
+
+| 浏览器本地 EchoDepthNet ONNX 神经深度（实测 51ms） | 移动端 360×740 随身助行（零溢出） |
+| :---: | :---: |
+| ![EchoDepthNet ONNX 实时深度热力图](docs/screenshots/echodepth_onnx_live.png) | ![移动端随身助行界面](docs/screenshots/mobile_companion_360.png) |
+
 ## 核心工程创新
-1. **EchoSafe V6 可靠性状态机与全链路失效保护（`src/engine/echoSafe.ts`、`src/engine/accessibleNotifier.ts`）**：
+1. **前后端打通：EchoDepthNet (1.11M) 端侧神经深度 ONNX 实时推理（`research/` → `public/models/echodepth_net.onnx` → `src/engine/echoDepthOnnx.ts`）**：
+   - 自研轻量化双头网络（MobileNetV3-Small + 可微 Sobel 先验 + **Residual FG-EDFM** 残差频域边缘深度融合），单次前向推理同时输出近场深度图与 `16×48` 声学危险度矩阵；在 `01 声画扫描 → 神经深度` 中通过 `onnxruntime-web` WASM 在浏览器本地实测 **51ms** 实时推理并直接驱动 3D HRTF 声场。
+2. **EchoSafe V6–V8 可靠性状态机与全链路失效保护（`src/engine/echoSafe.ts`、`src/engine/accessibleNotifier.ts`）**：
    - 六状态精细管理（`IDLE` / `INITIALIZING` / `ACTIVE` / `DEGRADED` / `UNAVAILABLE` / `DEMO`），严格隔离真实摄像头（`REAL_CAMERA`）与模拟演示数据（`SIMULATED_SCENE`）。
    - **单调视频帧标识与必填契约（`FrameTracker` + `PerceptionPacket`）**：每帧真实新画面分配单调 `frameId`，运行时强制校验正整数 `frameId` 与递增下界，防止低帧率摄像头下同帧重复推理或乱序旧包覆盖。
    - **统一无障碍通知分发与状态转换反馈（`AccessibleNotificationDispatcher` + `planEchoSafeTransition`）**：将消息有效性与浏览器 TTS 解耦，开启「读屏器防冲突模式」时自动静音内置 TTS 仍确保 ARIA Live 收到有效更新；视频冻结转入 `UNAVAILABLE` 时联动 `role="alert"` + 语音 + 触觉报警并即时熔断连续声场。
@@ -32,7 +40,7 @@
 ## 本地开发、测试与构建
 ```bash
 npm install
-npm test        # 运行 Vitest 自动化单元测试套件（40 项用例）
+npm test        # 运行 Vitest 自动化单元测试套件（41 项用例）
 npm run dev     # 本地预览
 npm run build   # TypeScript 严格检查并生成 dist/ 静态构建产物
 ```
