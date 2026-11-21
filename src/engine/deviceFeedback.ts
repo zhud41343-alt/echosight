@@ -76,11 +76,17 @@ export interface WakeLockNavigatorLike {
 
 /**
  * Manages the Screen Wake Lock API so the smartphone screen does not auto-dim/lock
- * during active blind-assist camera sessions, with automatic re-acquire on visibilitychange.
+ * during active blind-assist camera sessions, with:
+ * - Monotonic generation guard: if stop/release happens while request('screen') is pending,
+ *   the late-resolving sentinel is IMMEDIATELY released (zero leaked wake locks).
+ * - Single-flight deduplication: concurrent acquire() calls share the same request.
+ * - Automatic re-acquire on visibilitychange when session is still active.
  */
 export class ScreenWakeLockController {
   private sentinel: WakeLockSentinelLike | null = null;
   private nav: WakeLockNavigatorLike | null;
+  private generation = 0;
+  private inFlight: Promise<boolean> | null = null;
 
   constructor(nav?: WakeLockNavigatorLike | null) {
     this.nav =
@@ -99,26 +105,53 @@ export class ScreenWakeLockController {
     return this.sentinel !== null && !this.sentinel.released;
   }
 
-  public async acquire(): Promise<boolean> {
+  public async acquire(isSessionStillValid?: () => boolean): Promise<boolean> {
     if (!this.isSupported()) return false;
+    if (isSessionStillValid && !isSessionStillValid()) return false;
     if (this.isHeld) return true;
-    try {
-      const sentinel = await this.nav!.wakeLock!.request('screen');
-      this.sentinel = sentinel;
-      sentinel.addEventListener?.('release', () => {
-        if (this.sentinel === sentinel) {
+    if (this.inFlight) return this.inFlight;
+
+    const myGen = ++this.generation;
+    const task = (async (): Promise<boolean> => {
+      try {
+        const sentinel = await this.nav!.wakeLock!.request('screen');
+        // P1-1: If release() was called or session invalidated while awaiting, release immediately!
+        if (this.generation !== myGen || (isSessionStillValid && !isSessionStillValid())) {
+          try {
+            await sentinel.release();
+          } catch {
+            // Ignore release errors
+          }
+          return false;
+        }
+        this.sentinel = sentinel;
+        sentinel.addEventListener?.('release', () => {
+          if (this.sentinel === sentinel) {
+            this.sentinel = null;
+          }
+        });
+        return true;
+      } catch {
+        // Gracefully ignore NotAllowedError (e.g. battery saver / background tab)
+        if (this.generation === myGen) {
           this.sentinel = null;
         }
-      });
-      return true;
-    } catch {
-      // Gracefully ignore NotAllowedError (e.g. battery saver / background tab)
-      this.sentinel = null;
-      return false;
-    }
+        return false;
+      } finally {
+        if (this.generation === myGen) {
+          this.inFlight = null;
+        }
+      }
+    })();
+
+    this.inFlight = task;
+    return task;
   }
 
   public async release(): Promise<void> {
+    // Invalidate any pending acquire() first so late-resolving sentinels self-release
+    this.generation += 1;
+    this.inFlight = null;
     const s = this.sentinel;
     this.sentinel = null;
     if (s) {
@@ -130,13 +163,17 @@ export class ScreenWakeLockController {
     }
   }
 
-  public async handleVisibilityChange(isVisible: boolean, shouldHold: boolean): Promise<boolean> {
+  public async handleVisibilityChange(
+    isVisible: boolean,
+    shouldHold: boolean,
+    isSessionStillValid?: () => boolean
+  ): Promise<boolean> {
     if (!isVisible) {
       await this.release();
       return false;
     }
     if (shouldHold) {
-      return this.acquire();
+      return this.acquire(isSessionStillValid);
     }
     return false;
   }

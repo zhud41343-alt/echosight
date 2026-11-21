@@ -179,10 +179,11 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
     expect(guard.isValid(s2)).toBe(true);
   });
 
-  it('P0-4 & P0-2: isPerceptionPacketUsable enforces currentSafeState, raw frame age, temporal order, and rejects future timestamps', () => {
+  it('P0-4 & P0-2: isPerceptionPacketUsable enforces currentSafeState, frameId, raw frame age, temporal order, and rejects future timestamps', () => {
     const base: PerceptionPacket<string> = {
       dataSource: 'REAL_CAMERA',
       sessionId: 3,
+      frameId: 5,
       capturedAt: T - 300,
       inferredAt: T - 200,
       expiresAt: T + 3000,
@@ -324,7 +325,7 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
     ).toBe(false);
   });
 
-  it('P0-1 (V5): isPerceptionPacketUsable rejects malformed frameId', () => {
+  it('P1-2 (V6): isPerceptionPacketUsable rejects missing, malformed, or out-of-order frameId at runtime', () => {
     const base: PerceptionPacket<string> = {
       dataSource: 'REAL_CAMERA',
       sessionId: 3,
@@ -335,7 +336,18 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
       safeState: 'ACTIVE',
       detections: ['chair'],
     };
-    expect(isPerceptionPacketUsable(base, 3, 'ACTIVE', T)).toBe(true);
+    expect(isPerceptionPacketUsable(base, 3, 'ACTIVE', T, 3000, 12)).toBe(true);
+    // Missing frameId at runtime MUST be rejected
+    expect(
+      isPerceptionPacketUsable(
+        { ...base, frameId: undefined as unknown as number },
+        3,
+        'ACTIVE',
+        T
+      )
+    ).toBe(false);
+    // Out-of-order older frameId (< minFrameId) within same session rejected
+    expect(isPerceptionPacketUsable({ ...base, frameId: 11 }, 3, 'ACTIVE', T, 3000, 12)).toBe(false);
     expect(isPerceptionPacketUsable({ ...base, frameId: 0 }, 3, 'ACTIVE', T)).toBe(false);
     expect(isPerceptionPacketUsable({ ...base, frameId: -2 }, 3, 'ACTIVE', T)).toBe(false);
   });

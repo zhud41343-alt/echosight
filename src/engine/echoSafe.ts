@@ -424,12 +424,13 @@ export function canEmitContinuousSpatialAudio(
 }
 
 /**
- * P0-4: Unified perception result packet with explicit provenance, frame identity & TTL.
+ * P0-4 & P1-2 (V6): Unified perception result packet with strict runtime contract.
+ * Real camera packets MUST carry a valid positive integer frameId from FrameTracker.
  */
 export interface PerceptionPacket<T> {
   dataSource: DataSourceKind;
   sessionId: number;
-  frameId?: number;
+  frameId: number;
   capturedAt: number;
   inferredAt: number;
   expiresAt: number;
@@ -442,13 +443,21 @@ export function isPerceptionPacketUsable<T>(
   expectedSessionId: number,
   currentSafeState: SystemModeState,
   now: number,
-  maxFrameAgeMs = 3000
+  maxFrameAgeMs = 3000,
+  minFrameId = 1
 ): boolean {
   if (!packet) return false;
   if (packet.dataSource !== 'REAL_CAMERA') return false;
   if (packet.sessionId !== expectedSessionId) return false;
   if (packet.safeState !== 'ACTIVE' || currentSafeState !== 'ACTIVE') return false;
-  if (packet.frameId !== undefined && (!Number.isInteger(packet.frameId) || packet.frameId <= 0)) {
+
+  // P1-2 (V6): Runtime enforcement of required positive integer frameId & monotonic floor
+  if (
+    typeof packet.frameId !== 'number' ||
+    !Number.isInteger(packet.frameId) ||
+    packet.frameId <= 0 ||
+    packet.frameId < minFrameId
+  ) {
     return false;
   }
 

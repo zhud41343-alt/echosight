@@ -17,40 +17,116 @@ export interface CameraCalibration {
   focalLengthPx: number;
   /** Reference image height in pixels at which focalLengthPx was calibrated */
   referenceHeightPx: number;
+  /** Reference image width in pixels at calibration time */
+  referenceWidthPx?: number;
+  /** Explicit physical distance (m) used during calibration */
+  knownDistanceMeters?: number;
+  /** Explicit user-measured physical height (m) of the reference object */
+  knownHeightMeters?: number;
+  heightSource?: 'user_measured' | 'class_default';
+  /** MediaStreamTrack deviceId or camera label bound to this calibration */
+  cameraDeviceId?: string;
+  deviceLabel?: string;
+  /** True ONLY after real tape-measure error evaluation validates an interval */
+  measuredErrorValidated?: boolean;
+}
+
+const CALIBRATION_STORAGE_KEY = 'echosight:camera_calibration_v2';
+
+export interface CalibrationComputeParams {
+  labelEn: string;
+  bbox: [number, number, number, number];
+  knownDistanceMeters: number;
+  knownHeightMeters: number;
+  canvasW: number;
+  canvasH: number;
+  cameraDeviceId?: string;
   deviceLabel?: string;
 }
 
-const CALIBRATION_STORAGE_KEY = 'echosight:camera_calibration_v1';
-
 /**
- * Computes pinhole focal length from a known target class at a known physical distance (e.g. 2.0m).
- * Rejects clipped/tiny boxes or unknown-height classes to prevent bad calibration.
+ * P0-3 (V6): Computes pinhole focal length from explicit user-measured physical height & distance.
+ * Rejects boxes clipped on any edge, tiny boxes, extreme tilt/aspect distortion, or out-of-range inputs.
  */
 export function computeCameraCalibrationFromDetection(
-  labelEn: string,
-  bbox: [number, number, number, number],
-  knownDistanceMeters: number,
-  canvasH: number,
-  deviceLabel?: string
-): CameraCalibration | null {
-  const [, y, w, h] = bbox;
-  const realH = REAL_HEIGHT_M[labelEn];
-  if (!realH || !Number.isFinite(knownDistanceMeters) || knownDistanceMeters < 0.4 || knownDistanceMeters > 12) {
-    return null;
-  }
-  if (h < Math.max(20, canvasH * 0.08) || w < 10) return null;
-  if (y <= 2 || y + h >= canvasH - 2) return null;
-
-  const focalLengthPx = Math.round((h * knownDistanceMeters) / realH);
-  if (!Number.isFinite(focalLengthPx) || focalLengthPx < canvasH * 0.35 || focalLengthPx > canvasH * 3.5) {
-    return null;
-  }
-  return {
-    calibrated: true,
-    focalLengthPx,
-    referenceHeightPx: canvasH,
+  params: CalibrationComputeParams
+): { ok: true; calibration: CameraCalibration } | { ok: false; reason: string } {
+  const {
+    bbox,
+    knownDistanceMeters,
+    knownHeightMeters,
+    canvasW,
+    canvasH,
+    cameraDeviceId,
     deviceLabel,
+  } = params;
+  const [x, y, w, h] = bbox;
+
+  if (!Number.isFinite(knownDistanceMeters) || knownDistanceMeters < 0.5 || knownDistanceMeters > 10) {
+    return { ok: false, reason: '已知距离必须在 0.5–10 米之间。' };
+  }
+  if (!Number.isFinite(knownHeightMeters) || knownHeightMeters < 0.15 || knownHeightMeters > 3.0) {
+    return { ok: false, reason: '参考物真实高度必须在 0.15–3.0 米之间。' };
+  }
+  if (h < Math.max(24, canvasH * 0.1) || w < 14) {
+    return { ok: false, reason: '目标框过小，请靠近或选择更清晰参考物。' };
+  }
+  // Reject clipping on ANY edge (top, bottom, left, right)
+  if (x <= 2 || x + w >= canvasW - 2 || y <= 2 || y + h >= canvasH - 2) {
+    return { ok: false, reason: '参考物检测框贴边裁切，无法用于焦距标定。' };
+  }
+  // Reject extreme aspect ratios indicating severe perspective distortion or occlusion
+  const aspect = w / Math.max(1, h);
+  if (aspect > 4.5 || aspect < 0.12) {
+    return { ok: false, reason: '检测框纵横比异常（可能存在严重遮挡或倾斜），已拒判。' };
+  }
+
+  const focalLengthPx = Math.round((h * knownDistanceMeters) / knownHeightMeters);
+  if (!Number.isFinite(focalLengthPx) || focalLengthPx < canvasH * 0.35 || focalLengthPx > canvasH * 3.5) {
+    return { ok: false, reason: '推算焦距超出合理物理范围，请核对距离与高度测量值。' };
+  }
+
+  return {
+    ok: true,
+    calibration: {
+      calibrated: true,
+      focalLengthPx,
+      referenceHeightPx: canvasH,
+      referenceWidthPx: canvasW,
+      knownDistanceMeters,
+      knownHeightMeters,
+      heightSource: 'user_measured',
+      cameraDeviceId,
+      deviceLabel,
+      measuredErrorValidated: false,
+    },
   };
+}
+
+/**
+ * Verifies whether a saved calibration still applies to the active camera device & resolution.
+ * Switching cameras (front/back) or changing aspect ratio automatically invalidates reuse.
+ */
+export function isCalibrationApplicable(
+  cal: CameraCalibration | null | undefined,
+  currentCanvasW: number,
+  currentCanvasH: number,
+  currentCameraDeviceId?: string
+): boolean {
+  if (!cal || !cal.calibrated || cal.focalLengthPx <= 0 || cal.referenceHeightPx <= 0) {
+    return false;
+  }
+  if (cal.cameraDeviceId && currentCameraDeviceId && cal.cameraDeviceId !== currentCameraDeviceId) {
+    return false;
+  }
+  if (cal.referenceWidthPx && cal.referenceWidthPx > 0 && currentCanvasW > 0 && currentCanvasH > 0) {
+    const savedAspect = cal.referenceWidthPx / cal.referenceHeightPx;
+    const currentAspect = currentCanvasW / currentCanvasH;
+    if (Math.abs(savedAspect - currentAspect) / Math.max(savedAspect, currentAspect) > 0.12) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function loadSavedCameraCalibration(): CameraCalibration | null {
@@ -70,7 +146,13 @@ export function loadSavedCameraCalibration(): CameraCalibration | null {
         calibrated: true,
         focalLengthPx: parsed.focalLengthPx,
         referenceHeightPx: parsed.referenceHeightPx,
+        referenceWidthPx: parsed.referenceWidthPx,
+        knownDistanceMeters: parsed.knownDistanceMeters,
+        knownHeightMeters: parsed.knownHeightMeters,
+        heightSource: parsed.heightSource ?? 'user_measured',
+        cameraDeviceId: parsed.cameraDeviceId,
         deviceLabel: parsed.deviceLabel,
+        measuredErrorValidated: Boolean(parsed.measuredErrorValidated),
       };
     }
     return null;
@@ -363,7 +445,18 @@ export function estimateMonocularDistance(
     };
   }
 
-  // Calibrated conservative interval (±20%)
+  if (!calibration?.measuredErrorValidated) {
+    // P0-3 (V6): Never claim a fixed ±15% verified error interval before real tape-measure evaluation
+    return {
+      valid: true,
+      calibrated: true,
+      estimatedMeters: clamped,
+      band,
+      displayText: `${band}（实验估算约${clamped.toFixed(1)}米·未实测误差）`,
+    };
+  }
+
+  // Only when backed by real measured error validation
   const low = Math.max(0.3, Math.round(clamped * 0.85 * 10) / 10);
   const high = Math.round(clamped * 1.15 * 10) / 10;
   return {
@@ -924,27 +1017,33 @@ export function speakCue(
   });
 }
 
+export interface SpatialNarrationPayload {
+  text: string;
+  priority: 'EMERGENCY' | 'USER_QUERY' | 'AMBIENT';
+  dedupeKey: string;
+  cooldownMs: number;
+}
+
 /**
- * Fail-Safe spatial narration routed through AudioSpeechScheduler.
+ * Pure narration builder decoupled from browser TTS acceptance (P0-1 V6).
  * NEVER infers "safe / clear / walkable" from an empty detection array.
  */
-export function speakSpatialDetections(
+export function buildSpatialDetectionNotification(
   detections: SpatialDetection[],
   force = false,
   fallbackStatusCue?: string
-): string | null {
+): SpatialNarrationPayload | null {
   if (detections.length === 0) {
     if (!force && !fallbackStatusCue) return null;
     const text =
       fallbackStatusCue ||
       '未检测到已支持类别的物体。这不代表前方无障碍，请结合盲杖与现场确认。';
-    const res = audioScheduler.schedule({
+    return {
       text,
       priority: force ? 'USER_QUERY' : 'AMBIENT',
       dedupeKey: `empty:${text}`,
       cooldownMs: force ? 0 : 12000,
-    });
-    return res.accepted ? text : null;
+    };
   }
 
   const top = detections.slice(0, 3);
@@ -959,12 +1058,32 @@ export function speakSpatialDetections(
     })
     .join('；');
 
-  const res = audioScheduler.schedule({
+  return {
     text: summary,
     priority: force ? 'USER_QUERY' : hasNearHazard ? 'EMERGENCY' : 'AMBIENT',
     dedupeKey: signature,
     cooldownMs: force ? 0 : hasNearHazard ? 5000 : 15000,
+  };
+}
+
+/**
+ * Fail-Safe spatial narration routed through AudioSpeechScheduler.
+ * Returns text whenever accepted OR delegated to screen reader ARIA Live (never drops SR updates!).
+ */
+export function speakSpatialDetections(
+  detections: SpatialDetection[],
+  force = false,
+  fallbackStatusCue?: string
+): string | null {
+  const payload = buildSpatialDetectionNotification(detections, force, fallbackStatusCue);
+  if (!payload) return null;
+
+  const res = audioScheduler.schedule({
+    text: payload.text,
+    priority: payload.priority,
+    dedupeKey: payload.dedupeKey,
+    cooldownMs: payload.cooldownMs,
   });
 
-  return res.accepted ? summary : null;
+  return res.accepted || res.reason === 'screen_reader_delegated' ? payload.text : null;
 }

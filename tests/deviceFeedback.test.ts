@@ -73,6 +73,60 @@ describe('Mobile BLV Device Feedback, Screen Wake Lock & Screen-Reader Anti-Coll
     expect(failing.isHeld).toBe(false);
   });
 
+  it('P1-1 (V6): ScreenWakeLockController immediately releases late-resolving sentinel after stop and deduplicates concurrent acquire()', async () => {
+    let resolvePending!: (s: WakeLockSentinelLike) => void;
+    const lateReleaseMock = vi.fn(async () => {});
+    const requestMock = vi.fn(
+      () =>
+        new Promise<WakeLockSentinelLike>((res) => {
+          resolvePending = res;
+        })
+    );
+
+    const ctrl = new ScreenWakeLockController({ wakeLock: { request: requestMock } });
+
+    // Two concurrent acquire() calls -> only ONE underlying wakeLock.request('screen')
+    const p1 = ctrl.acquire();
+    const p2 = ctrl.acquire();
+    expect(requestMock).toHaveBeenCalledTimes(1);
+
+    // User stops live perception BEFORE wakeLock.request resolves!
+    await ctrl.release();
+
+    // Now the stale OS promise resolves -> MUST immediately release sentinel & stay unheld
+    resolvePending({
+      released: false,
+      release: lateReleaseMock,
+      addEventListener: () => {},
+    });
+
+    expect(await p1).toBe(false);
+    expect(await p2).toBe(false);
+    expect(lateReleaseMock).toHaveBeenCalledTimes(1);
+    expect(ctrl.isHeld).toBe(false);
+  });
+
+  it('P1-1 (V6): ScreenWakeLockController handles OS-initiated release event cleanly', async () => {
+    let osReleaseCb: (() => void) | null = null;
+    const ctrl = new ScreenWakeLockController({
+      wakeLock: {
+        request: async () => ({
+          released: false,
+          release: async () => {},
+          addEventListener: (_type, listener) => {
+            osReleaseCb = listener;
+          },
+        }),
+      },
+    });
+
+    expect(await ctrl.acquire()).toBe(true);
+    expect(ctrl.isHeld).toBe(true);
+    // OS revokes wake lock (e.g. power mode / system interruption)
+    osReleaseCb?.();
+    expect(ctrl.isHeld).toBe(false);
+  });
+
   it('AudioSpeechScheduler screenReaderSafeMode prevents VoiceOver/TalkBack double-speech collision', () => {
     const speakMock = vi.fn();
     const cancelMock = vi.fn();

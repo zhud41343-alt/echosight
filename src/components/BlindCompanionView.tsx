@@ -5,17 +5,17 @@ import {
   SpatialSceneMetrics,
 } from '../engine/visionProcessor';
 import {
+  buildSpatialDetectionNotification,
   CameraCalibration,
   clearSavedCameraCalibration,
   computeCameraCalibrationFromDetection,
   detectSpatialObjects,
+  isCalibrationApplicable,
   loadOnDeviceAIModel,
   loadSavedCameraCalibration,
   saveCameraCalibration,
   SpatialDetection,
   SpatialObjectTracker,
-  speakCue,
-  speakSpatialDetections,
 } from '../engine/aiObjectDetector';
 import { spatialAudio } from '../engine/spatialAudio';
 import { analyzeLightAndColor } from '../engine/blindAssistTools';
@@ -38,6 +38,10 @@ import {
 } from '../engine/echoSafe';
 import { audioScheduler } from '../engine/audioScheduler';
 import { hapticFeedback, ScreenWakeLockController } from '../engine/deviceFeedback';
+import {
+  AccessibleNotificationDispatcher,
+  planEchoSafeTransition,
+} from '../engine/accessibleNotifier';
 
 const MAX_PROC_DIM = 640;
 const EDGE_W = 160;
@@ -94,7 +98,12 @@ export const BlindCompanionView: React.FC = () => {
   const trackerRef = useRef(new SpatialObjectTracker());
   const frameTrackerRef = useRef(new FrameTracker());
   const wakeLockRef = useRef(new ScreenWakeLockController());
+  const notifierRef = useRef(
+    new AccessibleNotificationDispatcher(audioScheduler, hapticFeedback)
+  );
   const lastEdgeFrameIdRef = useRef<number>(0);
+  const lastAcceptedFrameIdRef = useRef<number>(1);
+  const cameraDeviceIdRef = useRef<string | undefined>(undefined);
   const prevSafeStateRef = useRef<SystemModeState>('IDLE');
   const procSizeRef = useRef<{ w: number; h: number }>({ w: 640, h: 480 });
 
@@ -128,7 +137,10 @@ export const BlindCompanionView: React.FC = () => {
   );
   const calibrationRef = useRef<CameraCalibration | null>(calibration);
   calibrationRef.current = calibration;
+  const [calDistInput, setCalDistInput] = useState<string>('2.0');
+  const [calHeightInput, setCalHeightInput] = useState<string>('0.85');
   const [calibrationNote, setCalibrationNote] = useState<string>('');
+  const [urgentAlertMessage, setUrgentAlertMessage] = useState<string>('');
   const [volume, setVolume] = useState(0.5);
   const [finderTarget, setFinderTarget] = useState<{ id: string; label: string } | null>(null);
   const [isListening, setIsListening] = useState(false);
@@ -185,7 +197,7 @@ export const BlindCompanionView: React.FC = () => {
     setIsListening(false);
   }, []);
 
-  // P0-2: Unified strict PerceptionPacket validity gate
+  // P0-2 & P1-2: Unified strict PerceptionPacket validity gate (with monotonic minFrameId)
   const getUsableDetections = useCallback(
     (now: number, currentSafeState: SystemModeState): SpatialDetection[] => {
       const pkt = packetRef.current;
@@ -195,12 +207,38 @@ export const BlindCompanionView: React.FC = () => {
           sessionGuardRef.current.currentId,
           currentSafeState,
           now,
-          MAX_FRAME_AGE_MS
+          MAX_FRAME_AGE_MS,
+          lastAcceptedFrameIdRef.current
         )
       ) {
         return [];
       }
       return pkt!.detections;
+    },
+    []
+  );
+
+  // P0-1: Route ALL user-facing announcements through AccessibleNotificationDispatcher
+  const say = useCallback(
+    (
+      text: string,
+      priority: 'EMERGENCY' | 'USER_QUERY' | 'AMBIENT' = 'USER_QUERY',
+      opts?: { dedupeKey?: string; cooldownMs?: number; haptic?: 'confirm' | 'warning' | 'unavailable' }
+    ) => {
+      const res = notifierRef.current.dispatch({
+        text,
+        priority,
+        dedupeKey: opts?.dedupeKey,
+        cooldownMs: opts?.cooldownMs,
+        haptic: opts?.haptic,
+      });
+      if (res.delivered && res.text) {
+        setAssistantMessage(res.text);
+        if (res.ariaChannel === 'assertive') {
+          setUrgentAlertMessage(res.text);
+        }
+      }
+      return res;
     },
     []
   );
@@ -223,7 +261,9 @@ export const BlindCompanionView: React.FC = () => {
     setSafeSnap(snap);
     setPerf(metricsTrackerRef.current.getSnapshot(now));
 
-    if (snap.state === 'UNAVAILABLE' || snap.state === 'IDLE') {
+    // P0-2 (V6): Unified state transition feedback (ARIA assertive + TTS + haptic + audio stop)
+    const plan = planEchoSafeTransition(prevState, snap);
+    if (plan.stopSpatialAudio) {
       spatialAudio.stopAllImmediate();
       lastEdgeFrameIdRef.current = 0;
       if (lowEdgeRef.current) {
@@ -234,33 +274,29 @@ export const BlindCompanionView: React.FC = () => {
         highEdgeRef.current = false;
         setHighEdgeDense(false);
       }
-      // Explicit fail-safe feedback on transition into UNAVAILABLE (works even when audio is muted/unavailable)
-      if (
-        snap.state === 'UNAVAILABLE' &&
-        (prevState === 'ACTIVE' || prevState === 'DEGRADED' || prevState === 'INITIALIZING')
-      ) {
-        hapticFeedback.trigger('unavailable');
-        setAssistantMessage(`实时感知已失效：${snap.userSummary}`);
-      }
     }
 
-    if (!snap.canTrustLivePerception) {
-      if (packetRef.current !== null) {
-        packetRef.current = null;
-        setDetections([]);
-        clearOverlayCanvas();
+    if (plan.clearPerceptionData && packetRef.current !== null) {
+      packetRef.current = null;
+      setDetections([]);
+      clearOverlayCanvas();
+    }
+
+    if (plan.notification) {
+      const res = notifierRef.current.dispatch({ ...plan.notification, now });
+      if (res.delivered && res.text) {
+        setAssistantMessage(res.text);
+        if (res.ariaChannel === 'assertive') {
+          setUrgentAlertMessage(res.text);
+        } else {
+          setUrgentAlertMessage('');
+        }
       }
+    } else if (snap.state === 'ACTIVE') {
+      setUrgentAlertMessage('');
     }
     return snap;
   }, [clearOverlayCanvas]);
-
-  const say = useCallback(
-    (text: string, priority: 'EMERGENCY' | 'USER_QUERY' | 'AMBIENT' = 'USER_QUERY') => {
-      setAssistantMessage(text);
-      speakCue(text, 1.04, priority);
-    },
-    []
-  );
 
   const stopVideoFrameWatcher = useCallback(() => {
     const vid = videoRef.current as VideoWithVfc | null;
@@ -308,8 +344,12 @@ export const BlindCompanionView: React.FC = () => {
     packetRef.current = null;
     trackerRef.current.reset();
     frameTrackerRef.current.reset();
+    notifierRef.current.reset();
     lastEdgeFrameIdRef.current = 0;
+    lastAcceptedFrameIdRef.current = 1;
+    cameraDeviceIdRef.current = undefined;
     setDetections([]);
+    setUrgentAlertMessage('');
     clearOverlayCanvas();
     setFinderTarget(null);
     setAnomalyNote('');
@@ -365,7 +405,10 @@ export const BlindCompanionView: React.FC = () => {
         setDetections([]);
         clearOverlayCanvas();
         spatialAudio.ensureContext();
-        void wakeLockRef.current.handleVisibilityChange(true, trackLive).then(setWakeLockActive);
+        const curSession = sessionGuardRef.current.currentId;
+        void wakeLockRef.current
+          .handleVisibilityChange(true, trackLive, () => sessionGuardRef.current.isValid(curSession))
+          .then(setWakeLockActive);
         refreshSafeState();
         if (!trackLive) {
           say('页面已切回前台，但摄像头视频流已中断，请重新启动实时感知。', 'EMERGENCY');
@@ -415,10 +458,14 @@ export const BlindCompanionView: React.FC = () => {
     const mySession = sessionGuardRef.current.begin();
     trackerRef.current.reset();
     frameTrackerRef.current.reset();
+    notifierRef.current.reset();
     lastEdgeFrameIdRef.current = 0;
-    void wakeLockRef.current.acquire().then((held) => {
-      if (sessionGuardRef.current.isValid(mySession)) setWakeLockActive(held);
-    });
+    lastAcceptedFrameIdRef.current = 1;
+    void wakeLockRef.current
+      .acquire(() => sessionGuardRef.current.isValid(mySession))
+      .then((held) => {
+        if (sessionGuardRef.current.isValid(mySession)) setWakeLockActive(held);
+      });
     const startTs = performance.now();
     signalsRef.current = {
       ...createInitialSignals(),
@@ -457,6 +504,8 @@ export const BlindCompanionView: React.FC = () => {
 
       const track = stream.getVideoTracks()[0];
       if (track) {
+        const settings = typeof track.getSettings === 'function' ? track.getSettings() : undefined;
+        cameraDeviceIdRef.current = settings?.deviceId || track.label || undefined;
         track.onended = () => {
           if (!sessionGuardRef.current.isValid(mySession)) return;
           signalsRef.current.cameraTrackLive = false;
@@ -674,14 +723,18 @@ export const BlindCompanionView: React.FC = () => {
         }
         sCtx.drawImage(vid, 0, 0, targetW, targetH);
 
+        const activeCalibration = isCalibrationApplicable(
+          calibrationRef.current,
+          targetW,
+          targetH,
+          cameraDeviceIdRef.current
+        )
+          ? calibrationRef.current
+          : null;
+
         const t0 = performance.now();
         try {
-          const rawRes = await detectSpatialObjects(
-            src,
-            false,
-            'crosswalk',
-            calibrationRef.current
-          );
+          const rawRes = await detectSpatialObjects(src, false, 'crosswalk', activeCalibration);
           const tEnd = performance.now();
           const duration = tEnd - t0;
 
@@ -696,7 +749,8 @@ export const BlindCompanionView: React.FC = () => {
           metricsTrackerRef.current.recordInference(tEnd, duration, tEnd - claimedFrame.capturedAt);
 
           const snap = refreshSafeState();
-          if (snap.canTrustLivePerception) {
+          if (snap.canTrustLivePerception && claimedFrame.frameId >= lastAcceptedFrameIdRef.current) {
+            lastAcceptedFrameIdRef.current = claimedFrame.frameId;
             packetRef.current = {
               dataSource: 'REAL_CAMERA',
               sessionId: mySession,
@@ -759,9 +813,8 @@ export const BlindCompanionView: React.FC = () => {
             }
 
             if (usable.length > 0 && audioStrategyRef.current !== 'on_demand') {
-              if (usable[0].distance === '近距离' && usable[0].priority === 'danger') {
-                hapticFeedback.trigger('warning', tEnd);
-              }
+              const isNearExperimentalTarget =
+                usable[0].distance === '近距离' && usable[0].priority === 'danger';
               if (
                 audioStrategyRef.current === 'low_freq_spatial' &&
                 usable[0].distance === '近距离' &&
@@ -775,8 +828,18 @@ export const BlindCompanionView: React.FC = () => {
                   volume: volume * 0.6,
                 });
               }
-              const spoken = speakSpatialDetections(usable, false);
-              if (spoken) setAssistantMessage(spoken);
+              // P0-1 (V6): Dispatch via AccessibleNotificationDispatcher so ARIA Live NEVER drops in SR mode
+              const payload = buildSpatialDetectionNotification(usable, false);
+              if (payload) {
+                const dispatched = notifierRef.current.dispatch({
+                  ...payload,
+                  haptic: isNearExperimentalTarget ? 'warning' : undefined,
+                  now: tEnd,
+                });
+                if (dispatched.delivered && dispatched.text) {
+                  setAssistantMessage(dispatched.text);
+                }
+              }
             }
           }
         } catch {
@@ -997,7 +1060,21 @@ export const BlindCompanionView: React.FC = () => {
           </div>
         </div>
 
-        {/* Layer 3: Verified Speech Readout */}
+        {/* Persistent Assertive ARIA Alert Region (WCAG 2.2: mounted in DOM before urgent updates) */}
+        <div
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
+          className={
+            urgentAlertMessage
+              ? 'rounded-lg border border-warn/40 bg-warn-soft px-3.5 py-2 text-[12.5px] font-medium text-warn'
+              : 'sr-only'
+          }
+        >
+          {urgentAlertMessage}
+        </div>
+
+        {/* Layer 3: Verified Polite Speech Readout */}
         <div
           className="panel-sunken p-4 border-l-2 border-l-signal space-y-1.5"
           role="status"
@@ -1128,44 +1205,69 @@ export const BlindCompanionView: React.FC = () => {
             </div>
 
             <div className="panel-sunken p-2.5 space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="eyebrow">单目相机焦距标定（可选）</div>
-                  <div className="text-[11.5px] text-ink-2 mt-0.5">
-                    {calibration?.calibrated
-                      ? `已标定（f = ${calibration.focalLengthPx}px @ ${calibration.referenceHeightPx}px，输出 ±15% 保守区间）`
-                      : '未标定（默认仅输出近/中/远保守粗估，不输出小数米精度）'}
-                  </div>
+              <div className="space-y-1.5">
+                <div className="eyebrow">单目相机焦距实验标定（可选 · 需输入实测距离与高度）</div>
+                <div className="text-[11.5px] text-ink-2">
+                  {calibration?.calibrated
+                    ? `已保存实验标定（f = ${calibration.focalLengthPx}px @ ${calibration.referenceWidthPx ?? '?'}×${calibration.referenceHeightPx}，参考 ${calibration.knownDistanceMeters ?? '?'}m / 高 ${calibration.knownHeightMeters ?? '?'}m；未完成真实卷尺误差验证前仅作实验参考）`
+                    : '未标定（默认仅输出近/中/远保守粗估，不输出小数米精度）'}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <label className="flex items-center gap-1 text-[11.5px] text-ink-2">
+                    <span>实测距离(m)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="10"
+                      value={calDistInput}
+                      onChange={(e) => setCalDistInput(e.target.value)}
+                      className="w-16 rounded border border-line bg-surface px-1.5 py-0.5 text-[12px] text-ink num"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-[11.5px] text-ink-2">
+                    <span>参考物实测高(m)</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.15"
+                      max="3.0"
+                      value={calHeightInput}
+                      onChange={(e) => setCalHeightInput(e.target.value)}
+                      className="w-16 rounded border border-line bg-surface px-1.5 py-0.5 text-[12px] text-ink num"
+                    />
+                  </label>
                   <button
                     type="button"
                     disabled={!safeSnap.canTrustLivePerception || detections.length === 0}
                     onClick={() => {
                       const primary = detections[0];
                       if (!primary) return;
-                      const nextCal = computeCameraCalibrationFromDetection(
-                        primary.labelEn,
-                        primary.bbox,
-                        2.0,
-                        procSizeRef.current.h,
-                        'User 2.0m Reference'
-                      );
-                      if (!nextCal) {
-                        setCalibrationNote(
-                          '标定未通过：请将已知高度物体（如行人/椅子）完整置于 2.0 米处且勿贴边裁切。'
-                        );
+                      const distM = Number.parseFloat(calDistInput);
+                      const heightM = Number.parseFloat(calHeightInput);
+                      const res = computeCameraCalibrationFromDetection({
+                        labelEn: primary.labelEn,
+                        bbox: primary.bbox,
+                        knownDistanceMeters: distM,
+                        knownHeightMeters: heightM,
+                        canvasW: procSizeRef.current.w,
+                        canvasH: procSizeRef.current.h,
+                        cameraDeviceId: cameraDeviceIdRef.current,
+                        deviceLabel: cameraDeviceIdRef.current || 'Active Camera',
+                      });
+                      if (!res.ok) {
+                        setCalibrationNote(`标定未通过：${res.reason}`);
                         return;
                       }
-                      saveCameraCalibration(nextCal);
-                      setCalibration(nextCal);
+                      saveCameraCalibration(res.calibration);
+                      setCalibration(res.calibration);
                       setCalibrationNote(
-                        `已按 2.0 米处「${primary.labelZh}」完成标定（f = ${nextCal.focalLengthPx}px）。`
+                        `已保存实验标定（f = ${res.calibration.focalLengthPx}px，绑定当前摄像头配置）。切换摄像头或分辨率时将自动回退未标定估算。`
                       );
                     }}
                     className="btn btn-sm disabled:opacity-45"
                   >
-                    按 2.0m 参考物标定
+                    按实测值标定
                   </button>
                   {calibration?.calibrated && (
                     <button

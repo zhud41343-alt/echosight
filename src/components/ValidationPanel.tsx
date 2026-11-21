@@ -86,9 +86,9 @@ const CLAIM_ROWS: Array<{
   evidence: string;
 }> = [
   {
-    claim: 'EchoSafe V5 严格新鲜度、FrameTracker 防重复推理、连续声场即时熔断与全链路 Packet 校验',
+    claim: 'EchoSafe V6 严格新鲜度、FrameTracker 防重复推理、必填 frameId 契约、连续声场熔断与无障碍通知分发',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/（6 文件 34/34 通过）',
+    evidence: 'src/engine/echoSafe.ts + src/engine/accessibleNotifier.ts + src/engine/deviceFeedback.ts + tests/（7 文件 40/40 通过）',
   },
   {
     claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + stopAllImmediate 节点清理）',
@@ -142,10 +142,9 @@ export const ValidationPanel: React.FC = () => {
     <div className="space-y-6">
       <div className="panel p-6">
         <div className="eyebrow">06 · Verification & Boundaries</div>
-        <h2 className="title-serif text-[22px] mt-1">EchoSafe V3 技术验证、故障对比与能力边界</h2>
+        <h2 className="title-serif text-[22px] mt-1">EchoSafe V6 技术验证、故障对比与能力边界</h2>
         <p className="text-[13.5px] text-ink-2 mt-2 max-w-3xl leading-relaxed">
-          传统视觉转语音原型只关注“检测到了什么”，而 EchoSafe V3 进一步校验“数据是否来自真实相机、画面是否真正推进、
-          会话是否已失效、结果是否过期”。下表如实区分已验证与未验证层级，不将模拟测试等同于真机或真人验证。
+          传统视觉转语音原型只关注“检测到了什么”，而 EchoSafe V6 沿摄像头 → 新帧标识 → 多目标追踪 → 数据包校验 → 无障碍分发（ARIA + TTS + 触觉）全链路校验“数据是否真实、是否过期、失效时是否明确通知”。下表如实区分已验证与未验证层级，不将模拟测试等同于真机或真人验证。
         </p>
       </div>
 
@@ -155,7 +154,7 @@ export const ValidationPanel: React.FC = () => {
           <div>
             <div className="eyebrow">Innovation 01 · EchoSafe Contrast</div>
             <h3 className="text-[16px] font-semibold text-ink mt-0.5">
-              失效保护对比：历史实现 vs EchoSafe V3 状态机
+              失效保护对比：历史实现 vs EchoSafe V6 状态机
             </h3>
           </div>
           <span className="chip">点击故障场景实时计算</span>
@@ -183,7 +182,7 @@ export const ValidationPanel: React.FC = () => {
           </div>
           <div className="panel-sunken p-4 space-y-2 border-l-2 border-l-ok">
             <div className="flex items-center justify-between">
-              <span className="eyebrow text-ok">EchoSafe V3 输出</span>
+              <span className="eyebrow text-ok">EchoSafe V6 输出</span>
               <span className="chip num">
                 {evaluated.stateLabelZh} ({evaluated.state})
               </span>
