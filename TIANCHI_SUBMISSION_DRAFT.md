@@ -55,7 +55,7 @@
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：5 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`），**23/23 项用例全部通过**。
+- **自动化单元测试（`npm test` · Vitest v5.1.1）**：5 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`），**24/24 项用例全部通过**（覆盖空时间戳、画面冻结、`SessionGuard` 失效、`SpatialObjectTracker` IoU 空间追踪、全链路 `PerceptionPacket` 时间顺序校验、旧语音回调迟到与空间音互斥）。
 - **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**。
 - **真实浏览器多视口核验**：
   - `1440×900` 物理摄像头实测：分离统计 **视觉处理 40fps / AI 实际推理 1.2fps / 单次推理 39ms**，全流程 **0 控制台报错**；

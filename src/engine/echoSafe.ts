@@ -336,13 +336,35 @@ export interface PerceptionPacket<T> {
 export function isPerceptionPacketUsable<T>(
   packet: PerceptionPacket<T> | null,
   expectedSessionId: number,
-  now: number
+  currentSafeState: SystemModeState,
+  now: number,
+  maxFrameAgeMs = 3000
 ): boolean {
   if (!packet) return false;
   if (packet.dataSource !== 'REAL_CAMERA') return false;
   if (packet.sessionId !== expectedSessionId) return false;
-  if (packet.safeState !== 'ACTIVE') return false;
-  if (now > packet.expiresAt || now < packet.inferredAt - 50) return false;
+  if (packet.safeState !== 'ACTIVE' || currentSafeState !== 'ACTIVE') return false;
+
+  const { capturedAt, inferredAt, expiresAt } = packet;
+  if (
+    !Number.isFinite(capturedAt) ||
+    !Number.isFinite(inferredAt) ||
+    !Number.isFinite(expiresAt) ||
+    !Number.isFinite(now)
+  ) {
+    return false;
+  }
+
+  // Enforce monotonic temporal ordering: capturedAt <= inferredAt <= expiresAt
+  if (capturedAt > inferredAt || inferredAt > expiresAt) return false;
+
+  // Reject future timestamps (allow tiny 50ms clock jitter)
+  if (capturedAt > now + 50 || inferredAt > now + 50) return false;
+
+  // Reject stale raw camera frame AND expired inference packet
+  if (now - capturedAt > maxFrameAgeMs) return false;
+  if (now > expiresAt) return false;
+
   return true;
 }
 

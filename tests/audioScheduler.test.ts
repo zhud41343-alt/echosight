@@ -64,28 +64,37 @@ describe('Unified AudioSpeechScheduler V3 (race-free playbackId + unified clock 
     expect(r3.reason).toBe('dropped_lower_priority');
   });
 
-  it('blocks continuous spatial scan sound during active EMERGENCY/USER_QUERY speech and when muted', () => {
+  it('P0-3: blocks ALL spatial cues (continuous, finder, low_freq) during EMERGENCY/USER_QUERY speech and when audio output suspended or muted', () => {
     let clockNow = 2000;
     const mock = createMockBackendWithLateCallbacks();
     const sched = new AudioSpeechScheduler(mock.backend, () => clockNow);
 
     expect(sched.shouldAllowSpatialCue('continuous')).toBe(true);
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(true);
 
     sched.schedule({ text: '紧急提醒', priority: 'EMERGENCY' });
     clockNow = 2200;
     expect(sched.shouldAllowSpatialCue('continuous')).toBe(false);
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(false);
+    expect(sched.shouldAllowSpatialCue('low_freq')).toBe(false);
 
     mock.triggerDoneForIndex(0);
-    clockNow = 2400;
-    expect(sched.shouldAllowSpatialCue('continuous')).toBe(true);
+    clockNow = 3500;
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(true);
+
+    // Suspended audio output (e.g. headset disconnected / browser suspended) blocks cues
+    sched.setAudioOutputReady(false);
+    clockNow = 5000;
+    expect(sched.shouldAllowSpatialCue('finder')).toBe(false);
+    sched.setAudioOutputReady(true);
 
     sched.setMuted(true);
-    clockNow = 3000;
+    clockNow = 6500;
     expect(sched.shouldAllowSpatialCue('continuous')).toBe(false);
     expect(sched.shouldAllowSpatialCue('finder')).toBe(false);
 
     sched.setMuted(false);
-    clockNow = 4000;
+    clockNow = 8000;
     expect(sched.shouldAllowSpatialCue('finder')).toBe(true);
   });
 
