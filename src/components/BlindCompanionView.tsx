@@ -132,6 +132,12 @@ export const BlindCompanionView: React.FC = () => {
   });
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [wakeLockActive, setWakeLockActive] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const cameraFacingRef = useRef<'environment' | 'user'>('environment');
+  cameraFacingRef.current = cameraFacing;
+  const [isOffline, setIsOffline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
   const [calibration, setCalibration] = useState<CameraCalibration | null>(() =>
     loadSavedCameraCalibration()
   );
@@ -324,6 +330,31 @@ export const BlindCompanionView: React.FC = () => {
     hapticFeedback.setEnabled(hapticsEnabled);
   }, [hapticsEnabled]);
 
+  // Network online/offline awareness (honest disclosure for cloud SpeechRecognition & first-time model CDN)
+  useEffect(() => {
+    const onOffline = () => {
+      setIsOffline(true);
+      const modelReady = signalsRef.current.modelState === 'ready';
+      say(
+        modelReady
+          ? '当前网络已断开。本地视觉识别与音频可继续运行，但浏览器语音识别可能暂不可用，请改用快捷按钮。'
+          : '当前网络已断开，首次模型加载与浏览器语音识别可能不可用。',
+        'EMERGENCY',
+        { dedupeKey: 'net:offline', cooldownMs: 5000 }
+      );
+    };
+    const onOnline = () => {
+      setIsOffline(false);
+      say('网络已恢复连接。', 'USER_QUERY', { dedupeKey: 'net:online', cooldownMs: 5000 });
+    };
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [say]);
+
   const stopAllSensors = useCallback(() => {
     sessionGuardRef.current.invalidate();
     abortSpeechRecognition();
@@ -490,7 +521,7 @@ export const BlindCompanionView: React.FC = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: 'environment' },
+          facingMode: { ideal: cameraFacingRef.current },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -1199,8 +1230,34 @@ export const BlindCompanionView: React.FC = () => {
                 />
                 下次启动时开启「实验性单路环境异常声响提示」（默认关闭以减少误报干扰）
               </label>
-              <div className="text-[11px] text-ink-3">
-                屏幕常亮保护（Screen Wake Lock）：{wakeLockActive ? '已激活（防行进中自动息屏）' : '待机 / 设备不支持'}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-ink-3">
+                <span>
+                  屏幕常亮保护（尽力申请）：{wakeLockActive ? '已激活' : '待机 / 设备不支持'} · 网络：{isOffline ? '离线' : '在线'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: 'environment' | 'user' =
+                      cameraFacing === 'environment' ? 'user' : 'environment';
+                    cameraFacingRef.current = next;
+                    setCameraFacing(next);
+                    if (signalsRef.current.requestedLive || signalsRef.current.initializing) {
+                      stopAllSensors();
+                      say(
+                        `已切换为${next === 'environment' ? '后置' : '前置'}摄像头，请重新点击「启动实时感知」（原标定将自动校验是否适用）。`,
+                        'USER_QUERY'
+                      );
+                    } else {
+                      say(
+                        `下次启动将使用${next === 'environment' ? '后置' : '前置'}摄像头。`,
+                        'USER_QUERY'
+                      );
+                    }
+                  }}
+                  className="btn btn-sm"
+                >
+                  镜头：{cameraFacing === 'environment' ? '后置（点击切前置）' : '前置（点击切后置）'}
+                </button>
               </div>
             </div>
 
