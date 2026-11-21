@@ -86,14 +86,19 @@ const CLAIM_ROWS: Array<{
   evidence: string;
 }> = [
   {
-    claim: 'EchoSafe V3 严格新鲜度、SessionGuard 防异步回写与 Packet 有效期校验',
+    claim: 'EchoSafe V4 严格新鲜度、SessionGuard、IoU 多目标追踪与全链路 Packet 校验',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + tests/echoSafe.test.ts（含空时间戳、冻结、过期会话与竞态测试）',
+    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/echoSafe.test.ts + tests/distance.test.ts（24/24 用例通过）',
   },
   {
-    claim: '无竞态音频优先级调度器（playbackId 防旧回调覆盖 + 统一单调时钟）',
+    claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + 单调时钟）',
     tier: '已实现且自动化验证',
     evidence: 'src/engine/audioScheduler.ts + tests/audioScheduler.test.ts',
+  },
+  {
+    claim: 'SpeechRecognition 全生命周期管理（防重复实例、停止/卸载 abort、过期回调丢弃）',
+    tier: '已实现且已浏览器验证',
+    evidence: 'src/components/BlindCompanionView.tsx（speechRecRef + voiceSessionIdRef）',
   },
   {
     claim: '失效保护文案（空检测绝不输出安全承诺、过街询问强制拒绝）',

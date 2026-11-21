@@ -96,12 +96,13 @@ export class AudioSpeechScheduler {
   private activePlaybackId: number | null = null;
   private currentPriority: SpeechPriority | null = null;
   private muted = false;
+  private audioOutputReady = true;
   private lastKeySpokenAt = new Map<string, number>();
   private lastAnyAmbientAt: number | null = null;
   private lastSpatialCueAt = new Map<SpatialCueKind, number>();
   private queue: Array<{ req: SpeechRequest; enqueuedAt: number }> = [];
   private listeners = new Set<
-    (status: { available: boolean; muted: boolean; lastText: string }) => void
+    (status: { available: boolean; muted: boolean; audioOutputReady: boolean; lastText: string }) => void
   >();
   private lastText = '';
 
@@ -116,6 +117,13 @@ export class AudioSpeechScheduler {
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  public setAudioOutputReady(ready: boolean) {
+    if (this.audioOutputReady !== ready) {
+      this.audioOutputReady = ready;
+      this.notify();
+    }
   }
 
   public getCurrentPriority(): SpeechPriority | null {
@@ -135,39 +143,50 @@ export class AudioSpeechScheduler {
     // Advance activePlaybackId to null so any late callbacks from cancelled speech are ignored
     this.activePlaybackId = null;
     this.currentPriority = null;
+    this.lastSpatialCueAt.clear();
     this.backend.cancel();
   }
 
   public subscribe(
-    fn: (status: { available: boolean; muted: boolean; lastText: string }) => void
+    fn: (status: { available: boolean; muted: boolean; audioOutputReady: boolean; lastText: string }) => void
   ): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
 
   private notify() {
-    const snap = { available: this.isAvailable(), muted: this.muted, lastText: this.lastText };
+    const snap = {
+      available: this.isAvailable(),
+      muted: this.muted,
+      audioOutputReady: this.audioOutputReady,
+      lastText: this.lastText,
+    };
     this.listeners.forEach((fn) => fn(snap));
   }
 
   /**
-   * Coordinates spatial audio cues (HRTF scan / finder beacon / low-freq ping) with active speech.
-   * Blocks spatial clutter during EMERGENCY/USER_QUERY speech or when muted.
+   * P0-3 Unified Output Coordination:
+   * ALL spatial cues (continuous, finder, low_freq) yield to EMERGENCY or USER_QUERY speech,
+   * and are blocked when muted or when audio output context is suspended/unavailable.
    */
   public shouldAllowSpatialCue(kind: SpatialCueKind, now?: number): boolean {
-    if (this.muted) return false;
+    if (this.muted || !this.audioOutputReady) return false;
     const t = now ?? this.clock();
 
-    // Never layer continuous scan sound over emergency or user-query speech
+    // No spatial cue may compete with active EMERGENCY or USER_QUERY speech
     if (
-      kind === 'continuous' &&
       this.activePlaybackId !== null &&
       (this.currentPriority === 'EMERGENCY' || this.currentPriority === 'USER_QUERY')
     ) {
       return false;
     }
 
-    const minGap = kind === 'continuous' ? 65 : kind === 'finder' ? 750 : 1200;
+    // Continuous scan also yields to active AMBIENT speech so narration stays clear
+    if (kind === 'continuous' && this.activePlaybackId !== null) {
+      return false;
+    }
+
+    const minGap = kind === 'continuous' ? 80 : kind === 'finder' ? 850 : 1400;
     const prev = this.lastSpatialCueAt.get(kind);
     if (prev !== undefined && t - prev < minGap) {
       return false;

@@ -1,14 +1,37 @@
 import { describe, it, expect } from 'vitest';
 import {
   CameraCalibration,
+  computeBboxIoU,
   computeDistanceErrorStats,
-  DetectionStabilizer,
   estimateMonocularDistance,
   REAL_HEIGHT_M,
   SpatialDetection,
+  SpatialObjectTracker,
 } from '../src/engine/aiObjectDetector';
 
-describe('Monocular distance estimation & MAE/P90 benchmark harness', () => {
+function makeDet(
+  labelEn: string,
+  bbox: [number, number, number, number],
+  score: number
+): SpatialDetection {
+  return {
+    labelEn,
+    labelZh: labelEn,
+    score,
+    bbox,
+    direction: '正前方',
+    clockFace: '12点方向',
+    distance: '近距离',
+    distanceMeters: 1.5,
+    distanceText: '较近（未标定粗估）',
+    distanceCalibrated: false,
+    priority: 'normal',
+    source: 'tfjs',
+    detectedAt: 1000,
+  };
+}
+
+describe('Monocular distance estimation & P0-1 SpatialObjectTracker', () => {
   const W = 640;
   const H = 480;
   const cal: CameraCalibration = {
@@ -27,31 +50,25 @@ describe('Monocular distance estimation & MAE/P90 benchmark harness', () => {
   });
 
   it('rejects clipped, tiny, and unknown-height bounding boxes as unknown', () => {
-    const tiny = estimateMonocularDistance('person', [100, 100, 6, 10], W, H, cal);
-    expect(tiny.valid).toBe(false);
-    expect(tiny.invalidReason).toBe('bbox_too_small');
-
-    const clipped = estimateMonocularDistance('person', [100, 0, 180, 480], W, H, cal);
-    expect(clipped.valid).toBe(false);
-    expect(clipped.invalidReason).toBe('clipped_vertical');
-
-    const unknownCls = estimateMonocularDistance('zebra', [100, 100, 120, 120], W, H, cal);
-    expect(unknownCls.valid).toBe(false);
-    expect(unknownCls.invalidReason).toBe('unknown_class_height');
+    expect(estimateMonocularDistance('person', [100, 100, 6, 10], W, H, cal).invalidReason).toBe(
+      'bbox_too_small'
+    );
+    expect(estimateMonocularDistance('person', [100, 0, 180, 480], W, H, cal).invalidReason).toBe(
+      'clipped_vertical'
+    );
+    expect(estimateMonocularDistance('zebra', [100, 100, 120, 120], W, H, cal).invalidReason).toBe(
+      'unknown_class_height'
+    );
   });
 
   it('evaluates MAE & P90 across 0.5, 1, 2, 3, 5, 8, 10m synthetic reference distances', () => {
     const refDistances = [0.5, 1, 2, 3, 5, 8, 10];
     const samples = refDistances.map((d) => {
-      // Simulate a person (1.68m) with +8% bbox height perturbation at distance d
       const idealH = (REAL_HEIGHT_M.person * cal.focalLengthPx) / d;
       const clampedH = Math.min(H - 12, idealH * 1.08);
       const y = Math.max(6, (H - clampedH) / 2);
       const est = estimateMonocularDistance('person', [220, y, 100, clampedH], W, H, cal);
-      return {
-        referenceMeters: d,
-        predictedMeters: est.estimatedMeters,
-      };
+      return { referenceMeters: d, predictedMeters: est.estimatedMeters };
     });
 
     const report = computeDistanceErrorStats(samples);
@@ -62,30 +79,43 @@ describe('Monocular distance estimation & MAE/P90 benchmark harness', () => {
     expect(report.byBand.length).toBe(3);
   });
 
-  it('DetectionStabilizer passes high-confidence immediately and filters single-frame low-confidence flicker', () => {
-    const stab = new DetectionStabilizer();
-    const makeDet = (labelEn: string, score: number): SpatialDetection => ({
-      labelEn,
-      labelZh: labelEn,
-      score,
-      bbox: [10, 10, 100, 100],
-      direction: '正前方',
-      clockFace: '12点方向',
-      distance: '近距离',
-      distanceMeters: 1.5,
-      distanceText: '较近（未标定粗估）',
-      distanceCalibrated: false,
-      priority: 'normal',
-      source: 'tfjs',
-      detectedAt: 1000,
-    });
+  it('P0-1: NEVER confirms two same-class objects at different positions (left chair vs right chair)', () => {
+    const tracker = new SpatialObjectTracker();
+    const leftChair = makeDet('chair', [20, 150, 100, 140], 0.55);
+    const rightChair = makeDet('chair', [500, 150, 100, 140], 0.56);
 
-    // Frame 1: chair (0.75) passes immediately; cup (0.42) held for 2-frame confirmation
-    const f1 = stab.filter([makeDet('chair', 0.75), makeDet('cup', 0.42)]);
-    expect(f1.map((d) => d.labelEn)).toEqual(['chair']);
+    expect(computeBboxIoU(leftChair.bbox, rightChair.bbox)).toBe(0);
+    // Frame 1: left chair (medium confidence) held for spatial confirmation
+    expect(tracker.update([leftChair], W, H)).toEqual([]);
+    // Frame 2: completely different right chair MUST NOT be confirmed by left chair's class!
+    expect(tracker.update([rightChair], W, H)).toEqual([]);
+    expect(tracker.getActiveTrackCount()).toBe(2);
+  });
 
-    // Frame 2: cup (0.44) appears consecutively -> now confirmed!
-    const f2 = stab.filter([makeDet('chair', 0.72), makeDet('cup', 0.44)]);
-    expect(f2.map((d) => d.labelEn)).toEqual(['chair', 'cup']);
+  it('P0-1: confirms same target with slight jitter, tracks multiple same-class objects independently, and expires disappeared targets', () => {
+    const tracker = new SpatialObjectTracker();
+    const chairA1 = makeDet('chair', [40, 150, 100, 140], 0.55);
+    const chairB1 = makeDet('chair', [460, 150, 100, 140], 0.54);
+    const chairA2 = makeDet('chair', [48, 154, 100, 140], 0.57);
+    const chairB2 = makeDet('chair', [452, 148, 100, 140], 0.56);
+
+    expect(tracker.update([chairA1, chairB1], W, H)).toEqual([]);
+    const f2 = tracker.update([chairA2, chairB2], W, H);
+    expect(f2.length).toBe(2);
+
+    // High-confidence fast mover confirms immediately without lag
+    const fastCar = makeDet('car', [240, 180, 140, 90], 0.82);
+    const f3 = tracker.update([fastCar], W, H);
+    expect(f3.map((d) => d.labelEn)).toEqual(['car']);
+
+    // Two empty frames prune disappeared tracks completely
+    tracker.update([], W, H);
+    tracker.update([], W, H);
+    expect(tracker.getActiveTrackCount()).toBe(0);
+
+    // Reset clears all tracks immediately
+    tracker.update([chairA1], W, H);
+    tracker.reset();
+    expect(tracker.getActiveTrackCount()).toBe(0);
   });
 });

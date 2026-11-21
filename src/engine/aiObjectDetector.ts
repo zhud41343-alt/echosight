@@ -405,24 +405,121 @@ let loadFailed = false;
 
 const trafficLightStabilizer = new TrafficLightStabilizer(3);
 
-/**
- * Lightweight temporal stabilizer to reduce single-frame MobileNet false positives
- * on handheld mobile cameras:
- * - High-confidence detections (>= 0.52) pass immediately.
- * - Medium-confidence detections (0.36..0.52) require appearing in 2 consecutive cycles.
- */
-export class DetectionStabilizer {
-  private prevClasses = new Set<string>();
+export function computeBboxIoU(
+  a: [number, number, number, number],
+  b: [number, number, number, number]
+): number {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  const x1 = Math.max(ax, bx);
+  const y1 = Math.max(ay, by);
+  const x2 = Math.min(ax + aw, bx + bw);
+  const y2 = Math.min(ay + ah, by + bh);
+  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  if (inter <= 0) return 0;
+  const union = aw * ah + bw * bh - inter;
+  return union > 0 ? inter / union : 0;
+}
 
-  public filter(items: SpatialDetection[]): SpatialDetection[] {
-    const currentClasses = new Set(items.map((d) => d.labelEn));
-    const kept = items.filter((d) => d.score >= 0.52 || this.prevClasses.has(d.labelEn));
-    this.prevClasses = currentClasses;
-    return kept;
+interface TrackedTarget {
+  trackId: number;
+  labelEn: string;
+  bbox: [number, number, number, number];
+  hits: number;
+  missedFrames: number;
+  lastDetection: SpatialDetection;
+}
+
+/**
+ * P0-1 Spatial Multi-Object Tracker (IoU + spatial proximity matching).
+ * Fixes class-only matching flaws:
+ * - Two same-class objects at different positions (e.g. left chair vs right chair) maintain
+ *   independent tracks and NEVER falsely confirm each other.
+ * - High-confidence fast movers (>= 0.68) pass immediately without over-smoothing lag.
+ * - Medium-confidence targets (0.45..0.68) require 2 consecutive spatially-matched frames.
+ * - Automatically expires disappeared targets and resets cleanly on session/mode changes.
+ */
+export class SpatialObjectTracker {
+  private tracks: TrackedTarget[] = [];
+  private nextTrackId = 1;
+
+  public update(
+    detections: SpatialDetection[],
+    frameW = 640,
+    frameH = 480
+  ): SpatialDetection[] {
+    const diag = Math.hypot(Math.max(1, frameW), Math.max(1, frameH));
+    const matchedTrackIds = new Set<number>();
+    const confirmed: SpatialDetection[] = [];
+
+    for (const det of detections) {
+      let bestTrack: TrackedTarget | null = null;
+      let bestScore = -1;
+
+      const detCx = det.bbox[0] + det.bbox[2] / 2;
+      const detCy = det.bbox[1] + det.bbox[3] / 2;
+
+      for (const tr of this.tracks) {
+        if (tr.labelEn !== det.labelEn || matchedTrackIds.has(tr.trackId)) continue;
+        const iou = computeBboxIoU(tr.bbox, det.bbox);
+        const trCx = tr.bbox[0] + tr.bbox[2] / 2;
+        const trCy = tr.bbox[1] + tr.bbox[3] / 2;
+        const normDist = Math.hypot(detCx - trCx, detCy - trCy) / diag;
+
+        // Require meaningful spatial overlap (IoU >= 0.2) or tight center proximity (< 14% diag)
+        if (iou >= 0.2 || normDist <= 0.14) {
+          const matchScore = iou * 2 + (1 - normDist);
+          if (matchScore > bestScore) {
+            bestScore = matchScore;
+            bestTrack = tr;
+          }
+        }
+      }
+
+      if (bestTrack) {
+        matchedTrackIds.add(bestTrack.trackId);
+        bestTrack.bbox = det.bbox;
+        bestTrack.hits += 1;
+        bestTrack.missedFrames = 0;
+        bestTrack.lastDetection = det;
+        if (bestTrack.hits >= 2 || det.score >= 0.68) {
+          confirmed.push(det);
+        }
+      } else {
+        const newTrack: TrackedTarget = {
+          trackId: this.nextTrackId++,
+          labelEn: det.labelEn,
+          bbox: det.bbox,
+          hits: 1,
+          missedFrames: 0,
+          lastDetection: det,
+        };
+        this.tracks.push(newTrack);
+        matchedTrackIds.add(newTrack.trackId);
+        // Fast-moving / very clear target (>= 0.68) confirms immediately without lag
+        if (det.score >= 0.68) {
+          confirmed.push(det);
+        }
+      }
+    }
+
+    // Age unmatched tracks and prune disappeared objects (max 1 missed frame tolerance)
+    this.tracks = this.tracks.filter((tr) => {
+      if (matchedTrackIds.has(tr.trackId)) return true;
+      tr.missedFrames += 1;
+      return tr.missedFrames <= 1;
+    });
+
+    return confirmed;
+  }
+
+  public getActiveTrackCount(): number {
+    return this.tracks.length;
   }
 
   public reset() {
-    this.prevClasses.clear();
+    this.tracks = [];
+    this.nextTrackId = 1;
   }
 }
 
@@ -652,7 +749,7 @@ export async function detectSpatialObjects(
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
   if (loadedModel && !loadFailed) {
-    const preds = await loadedModel.detect(canvas, 8, 0.36);
+    const preds = await loadedModel.detect(canvas, 8, 0.45);
     if (preds.length > 0) {
       const mapped: SpatialDetection[] = preds.map((p) => {
         const dir = computeDirectionMeta(p.bbox, canvas.width);
@@ -758,7 +855,7 @@ export function speakSpatialDetections(
     text: summary,
     priority: force ? 'USER_QUERY' : hasNearHazard ? 'EMERGENCY' : 'AMBIENT',
     dedupeKey: signature,
-    cooldownMs: force ? 0 : hasNearHazard ? 3000 : 10000,
+    cooldownMs: force ? 0 : hasNearHazard ? 5000 : 15000,
   });
 
   return res.accepted ? summary : null;

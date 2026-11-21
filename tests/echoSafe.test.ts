@@ -177,7 +177,7 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
     expect(guard.isValid(s2)).toBe(true);
   });
 
-  it('P0-4: isPerceptionPacketUsable rejects simulated, expired, wrong-session, and non-ACTIVE packets', () => {
+  it('P0-4 & P0-2: isPerceptionPacketUsable enforces currentSafeState, raw frame age, temporal order, and rejects future timestamps', () => {
     const base: PerceptionPacket<string> = {
       dataSource: 'REAL_CAMERA',
       sessionId: 3,
@@ -187,11 +187,28 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
       safeState: 'ACTIVE',
       detections: ['chair'],
     };
-    expect(isPerceptionPacketUsable(base, 3, T)).toBe(true);
-    expect(isPerceptionPacketUsable(base, 4, T)).toBe(false); // stale session
-    expect(isPerceptionPacketUsable(base, 3, T + 4000)).toBe(false); // expired TTL
-    expect(isPerceptionPacketUsable({ ...base, dataSource: 'SIMULATED_SCENE' }, 3, T)).toBe(false);
-    expect(isPerceptionPacketUsable({ ...base, safeState: 'DEGRADED' }, 3, T)).toBe(false);
+    expect(isPerceptionPacketUsable(base, 3, 'ACTIVE', T)).toBe(true);
+    // Current system state degraded/unavailable rejects even a freshly-created packet
+    expect(isPerceptionPacketUsable(base, 3, 'DEGRADED', T)).toBe(false);
+    expect(isPerceptionPacketUsable(base, 3, 'UNAVAILABLE', T)).toBe(false);
+    // Stale session or expired TTL
+    expect(isPerceptionPacketUsable(base, 4, 'ACTIVE', T)).toBe(false);
+    expect(isPerceptionPacketUsable(base, 3, 'ACTIVE', T + 4000)).toBe(false);
+    // Stale raw camera frame (> 3000ms) even if expiresAt is still in future
+    expect(
+      isPerceptionPacketUsable({ ...base, capturedAt: T - 3500 }, 3, 'ACTIVE', T, 3000)
+    ).toBe(false);
+    // Illegal temporal ordering (capturedAt > inferredAt) or future timestamp
+    expect(
+      isPerceptionPacketUsable({ ...base, capturedAt: T - 100, inferredAt: T - 200 }, 3, 'ACTIVE', T)
+    ).toBe(false);
+    expect(
+      isPerceptionPacketUsable({ ...base, capturedAt: T + 500, inferredAt: T + 600 }, 3, 'ACTIVE', T)
+    ).toBe(false);
+    // Simulated data strictly rejected
+    expect(
+      isPerceptionPacketUsable({ ...base, dataSource: 'SIMULATED_SCENE' }, 3, 'ACTIVE', T)
+    ).toBe(false);
   });
 
   it('SingleFlightRunner prevents overlapping async inference pile-up', async () => {
