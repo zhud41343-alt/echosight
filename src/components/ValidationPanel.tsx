@@ -88,7 +88,7 @@ const CLAIM_ROWS: Array<{
   {
     claim: 'EchoSafe V5 严格新鲜度、FrameTracker 防重复推理、连续声场即时熔断与全链路 Packet 校验',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/echoSafe.test.ts + tests/distance.test.ts（31/31 通过）',
+    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/（6 文件 34/34 通过）',
   },
   {
     claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + stopAllImmediate 节点清理）',

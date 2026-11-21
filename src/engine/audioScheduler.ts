@@ -41,6 +41,7 @@ export interface ScheduleResult {
     | 'dropped_lower_priority'
     | 'dropped_cooldown'
     | 'muted'
+    | 'screen_reader_delegated'
     | 'unavailable';
 }
 
@@ -96,6 +97,7 @@ export class AudioSpeechScheduler {
   private activePlaybackId: number | null = null;
   private currentPriority: SpeechPriority | null = null;
   private muted = false;
+  private screenReaderSafeMode = false;
   private audioOutputReady = true;
   private lastKeySpokenAt = new Map<string, number>();
   private lastAnyAmbientAt: number | null = null;
@@ -117,6 +119,23 @@ export class AudioSpeechScheduler {
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  /**
+   * WCAG 2.2 / Mobile Screen Reader best practice:
+   * When VoiceOver or TalkBack is active, suppress window.speechSynthesis so two TTS engines
+   * never speak over each other; ARIA live regions handle spoken announcements natively.
+   */
+  public setScreenReaderSafeMode(enabled: boolean) {
+    this.screenReaderSafeMode = enabled;
+    if (enabled) {
+      this.clearAll();
+    }
+    this.notify();
+  }
+
+  public isScreenReaderSafeMode(): boolean {
+    return this.screenReaderSafeMode;
   }
 
   public setAudioOutputReady(ready: boolean) {
@@ -198,6 +217,11 @@ export class AudioSpeechScheduler {
   public schedule(req: SpeechRequest): ScheduleResult {
     const text = req.text.trim();
     if (!text) return { accepted: false, reason: 'dropped_cooldown' };
+    if (this.screenReaderSafeMode) {
+      this.lastText = text;
+      this.notify();
+      return { accepted: false, reason: 'screen_reader_delegated' };
+    }
     if (this.muted && req.priority !== 'EMERGENCY') {
       return { accepted: false, reason: 'muted' };
     }

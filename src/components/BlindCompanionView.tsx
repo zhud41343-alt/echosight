@@ -37,6 +37,7 @@ import {
   SystemModeState,
 } from '../engine/echoSafe';
 import { audioScheduler } from '../engine/audioScheduler';
+import { hapticFeedback, ScreenWakeLockController } from '../engine/deviceFeedback';
 
 const MAX_PROC_DIM = 640;
 const EDGE_W = 160;
@@ -92,6 +93,7 @@ export const BlindCompanionView: React.FC = () => {
   const metricsTrackerRef = useRef(new RuntimeMetricsTracker());
   const trackerRef = useRef(new SpatialObjectTracker());
   const frameTrackerRef = useRef(new FrameTracker());
+  const wakeLockRef = useRef(new ScreenWakeLockController());
   const lastEdgeFrameIdRef = useRef<number>(0);
   const prevSafeStateRef = useRef<SystemModeState>('IDLE');
   const procSizeRef = useRef<{ w: number; h: number }>({ w: 640, h: 480 });
@@ -115,6 +117,12 @@ export const BlindCompanionView: React.FC = () => {
   const audioStrategyRef = useRef<AudioCueStrategy>('concise_voice');
   audioStrategyRef.current = audioStrategy;
   const [experimentalMicAlert, setExperimentalMicAlert] = useState(false);
+  const [screenReaderSafe, setScreenReaderSafe] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('echosight:sr_safe') === '1';
+  });
+  const [hapticsEnabled, setHapticsEnabled] = useState(true);
+  const [wakeLockActive, setWakeLockActive] = useState(false);
   const [calibration, setCalibration] = useState<CameraCalibration | null>(() =>
     loadSavedCameraCalibration()
   );
@@ -231,6 +239,7 @@ export const BlindCompanionView: React.FC = () => {
         snap.state === 'UNAVAILABLE' &&
         (prevState === 'ACTIVE' || prevState === 'DEGRADED' || prevState === 'INITIALIZING')
       ) {
+        hapticFeedback.trigger('unavailable');
         setAssistantMessage(`实时感知已失效：${snap.userSummary}`);
       }
     }
@@ -266,12 +275,26 @@ export const BlindCompanionView: React.FC = () => {
     lastVideoCurrentTimeRef.current = -1;
   }, []);
 
+  // Sync screen-reader anti-collision mode & haptic preference
+  useEffect(() => {
+    audioScheduler.setScreenReaderSafeMode(screenReaderSafe);
+    if (typeof window !== 'undefined') {
+      if (screenReaderSafe) window.localStorage.setItem('echosight:sr_safe', '1');
+      else window.localStorage.removeItem('echosight:sr_safe');
+    }
+  }, [screenReaderSafe]);
+
+  useEffect(() => {
+    hapticFeedback.setEnabled(hapticsEnabled);
+  }, [hapticsEnabled]);
+
   const stopAllSensors = useCallback(() => {
     sessionGuardRef.current.invalidate();
     abortSpeechRecognition();
     stopVideoFrameWatcher();
     audioScheduler.clearAll();
     spatialAudio.stopAllImmediate();
+    void wakeLockRef.current.release().then(() => setWakeLockActive(false));
     acousticMonitorRef.current?.stop();
     acousticMonitorRef.current = null;
     if (videoRef.current?.srcObject) {
@@ -303,6 +326,7 @@ export const BlindCompanionView: React.FC = () => {
       stopVideoFrameWatcher();
       audioScheduler.clearAll();
       spatialAudio.stopAllImmediate();
+      void wakeLockRef.current.release();
       acousticMonitorRef.current?.stop();
       if (videoRef.current?.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
@@ -310,7 +334,7 @@ export const BlindCompanionView: React.FC = () => {
     };
   }, [abortSpeechRecognition, stopVideoFrameWatcher]);
 
-  // Page visibility lifecycle (background immediately invalidates packet, stops spatial audio & clears overlay)
+  // Page visibility lifecycle (background immediately invalidates packet, stops spatial audio & releases Wake Lock)
   useEffect(() => {
     const onVisibility = () => {
       signalsRef.current.pageHidden = document.hidden;
@@ -325,6 +349,7 @@ export const BlindCompanionView: React.FC = () => {
         clearOverlayCanvas();
         audioScheduler.clearAll();
         spatialAudio.stopAllImmediate();
+        void wakeLockRef.current.handleVisibilityChange(false, false).then(setWakeLockActive);
         refreshSafeState();
       } else if (!document.hidden && signalsRef.current.requestedLive) {
         const stream = videoRef.current?.srcObject as MediaStream | null;
@@ -340,6 +365,7 @@ export const BlindCompanionView: React.FC = () => {
         setDetections([]);
         clearOverlayCanvas();
         spatialAudio.ensureContext();
+        void wakeLockRef.current.handleVisibilityChange(true, trackLive).then(setWakeLockActive);
         refreshSafeState();
         if (!trackLive) {
           say('页面已切回前台，但摄像头视频流已中断，请重新启动实时感知。', 'EMERGENCY');
@@ -378,6 +404,7 @@ export const BlindCompanionView: React.FC = () => {
 
   const toggleCompanion = useCallback(async () => {
     spatialAudio.ensureContext();
+    hapticFeedback.trigger('confirm');
 
     if (signalsRef.current.requestedLive || signalsRef.current.initializing) {
       stopAllSensors();
@@ -389,6 +416,9 @@ export const BlindCompanionView: React.FC = () => {
     trackerRef.current.reset();
     frameTrackerRef.current.reset();
     lastEdgeFrameIdRef.current = 0;
+    void wakeLockRef.current.acquire().then((held) => {
+      if (sessionGuardRef.current.isValid(mySession)) setWakeLockActive(held);
+    });
     const startTs = performance.now();
     signalsRef.current = {
       ...createInitialSignals(),
@@ -729,6 +759,9 @@ export const BlindCompanionView: React.FC = () => {
             }
 
             if (usable.length > 0 && audioStrategyRef.current !== 'on_demand') {
+              if (usable[0].distance === '近距离' && usable[0].priority === 'danger') {
+                hapticFeedback.trigger('warning', tEnd);
+              }
               if (
                 audioStrategyRef.current === 'low_freq_spatial' &&
                 usable[0].distance === '近距离' &&
@@ -1064,14 +1097,35 @@ export const BlindCompanionView: React.FC = () => {
                 <div className="text-ink mt-0.5">{perf.p95E2eMs} ms</div>
               </div>
             </div>
-            <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={experimentalMicAlert}
-                onChange={(e) => setExperimentalMicAlert(e.target.checked)}
-              />
-              下次启动时开启「实验性单路环境异常声响提示」（默认关闭以减少误报干扰）
-            </label>
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={screenReaderSafe}
+                  onChange={(e) => setScreenReaderSafe(e.target.checked)}
+                />
+                读屏器防冲突模式（静音网页内置朗读，交由 VoiceOver / TalkBack 通过 ARIA 朗读）
+              </label>
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hapticsEnabled}
+                  onChange={(e) => setHapticsEnabled(e.target.checked)}
+                />
+                事件触觉振动提示（启动确认 / 近距危险 / 失效报警，支持振动设备生效）
+              </label>
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={experimentalMicAlert}
+                  onChange={(e) => setExperimentalMicAlert(e.target.checked)}
+                />
+                下次启动时开启「实验性单路环境异常声响提示」（默认关闭以减少误报干扰）
+              </label>
+              <div className="text-[11px] text-ink-3">
+                屏幕常亮保护（Screen Wake Lock）：{wakeLockActive ? '已激活（防行进中自动息屏）' : '待机 / 设备不支持'}
+              </div>
+            </div>
 
             <div className="panel-sunken p-2.5 space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">

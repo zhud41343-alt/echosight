@@ -56,7 +56,7 @@
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：5 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`），**31/31 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、`canEmitContinuousSpatialAudio` 冻结即停、`SessionGuard` 失效、`SpatialObjectTracker` IoU 独立帧追踪、2.0m 参考物针孔标定、全链路 `PerceptionPacket` 时间顺序校验、旧语音回调迟到与空间音互斥）。
+- **自动化单元测试（`npm test` · Vitest v5.1.1）**：6 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`），**34/34 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、`canEmitContinuousSpatialAudio` 冻结即停、`SessionGuard` 失效、`SpatialObjectTracker` IoU 独立帧追踪、2.0m 参考物针孔标定、读屏器防冲突静音、Screen Wake Lock 生命周期、事件触觉振动冷却与全链路 `PerceptionPacket` 校验）。
 - **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**（6 大实验台模块已按需懒加载并包裹 `ModuleErrorBoundary`）。
 - **真实浏览器多视口核验**：
   - `1440×900` 桌面与物理摄像头实测：分离统计视觉帧率、AI 推理帧率与推理/端到端 P95 延迟（单机实测推理 P95 `257ms`，端到端 P95 `1205ms`，明确标注不适用于高速动态障碍独立避障），全流程 **0 控制台报错**；

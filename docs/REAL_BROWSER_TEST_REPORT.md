@@ -3,7 +3,7 @@
 - **测试时间**：2026-11-21
 - **测试分支**：`feat/echosafe-v5`（演进轨迹：V1 `fd1d425` → V2 `4531763` → V3 `dc58a2c` → V4 `994e537` → V5）
 - **测试环境**：Windows 11 + Vite Dev Server (`http://localhost:5173/`) + 真实内置 Chromium 浏览器
-- **自动化单元测试命令**：`npm test`（Vitest v5.1.1）→ **5/5 测试文件、31/31 项用例通过**
+- **自动化单元测试命令**：`npm test`（Vitest v5.1.1）→ **6/6 测试文件、34/34 项用例通过**
 - **生产构建命令**：`npm run build`（`tsc -b && vite build`）→ **0 错误**（主包 `317 kB` / gzip `101 kB`，6 大实验台模块已懒加载并包裹 `ModuleErrorBoundary`）
 
 ## 1. V5 真实浏览器回归实测记录

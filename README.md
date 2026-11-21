@@ -32,7 +32,7 @@
 ## 本地开发、测试与构建
 ```bash
 npm install
-npm test        # 运行 Vitest 自动化单元测试套件（31 项用例）
+npm test        # 运行 Vitest 自动化单元测试套件（34 项用例）
 npm run dev     # 本地预览
 npm run build   # TypeScript 严格检查并生成 dist/ 静态构建产物
 ```

@@ -166,6 +166,13 @@ export function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
+      {/* WCAG 2.2 Skip Navigation Link for keyboard & screen-reader users */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-ink focus:px-4 focus:py-2 focus:text-[13px] focus:font-semibold focus:text-paper focus:shadow-lg"
+      >
+        跳到主要内容
+      </a>
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-line bg-paper">
         <div className="mx-auto max-w-6xl px-3 sm:px-5 h-16 flex items-center justify-between gap-2 sm:gap-4">
@@ -228,7 +235,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-5">
+      <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-5 focus:outline-none">
         {appView === 'companion' ? (
           <section className="py-6 sm:py-8">
             <BlindCompanionView />
