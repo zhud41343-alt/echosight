@@ -56,8 +56,8 @@
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：7 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`、`accessibleNotifier`），**41/41 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、必填 `frameId` 运行时校验、`canEmitContinuousSpatialAudio` 冻结即停、`AccessibleNotificationDispatcher` 读屏防冲突不丢消息、`planEchoSafeTransition` 冻结失效多通道报警、会话绑定 Wake Lock 迟到自释放、实测高度标定与切换摄像头失效拒判、EMA 框体平滑与自然精简话术）。
-- **前后端自研模型打通实测**：自研 1.11M `EchoDepthNet (+Residual FG-EDFM)` 导出至 `public/models/echodepth_net.onnx`（ONNX Runtime 数值对齐误差 `4.77e-07`），在「01 声画扫描 → 神经深度」经 `onnxruntime-web` WASM 实测 **51ms** 实时推理并渲染 Inferno 深度热力图与 16×48 声学矩阵。
+- **自动化单元测试（`npm test` · Vitest v5.1.1 + Python 管道测试）**：前端 **8 个测试文件 44/44 项用例全部通过**（含 `AcousticMatrixRouter` 神经矩阵防 Sobel 覆盖、TTL 过期熔断、NaN/畸形维度拒判，及 EchoSafe 全链路 41 项用例）+ 后端 `test_pipeline_integrity.py` **3/3 通过**（缺失 checkpoint 强制失败、ONNX 形状与数值域校验）。
+- **前后端自研模型打通实测**：自研 1.11M `EchoDepthNet (+Residual EG-DFM)` 导出至 `public/models/echodepth_net.onnx`（SHA-256 见 `research/outputs/MODEL_PROVENANCE.md`，ONNX Runtime 数值误差 `4.77e-07`），在线上生产地址「01 声画扫描 → 神经深度」经 `onnxruntime-web` WASM 实测 **44ms** 实时推理，并通过 `AcousticMatrixRouter` 严格路由驱动 3D HRTF 声场。
 - **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**（6 大实验台模块已按需懒加载并包裹 `ModuleErrorBoundary`）。
 - **真实浏览器多视口核验**：
   - `1440×900` 桌面与物理摄像头实测：分离统计视觉帧率、AI 推理帧率与推理/端到端 P95 延迟（单机实测推理 P95 `257ms`，端到端 P95 `1205ms`，明确标注不适用于高速动态障碍独立避障），全流程 **0 控制台报错**；

@@ -4,7 +4,7 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 
-\title{EchoSight: Residual Frequency-Guided Edge-Depth Fusion and Fail-Safe Binaural Spatial Sonification for Visually Impaired Mobility Assistance}
+\title{EchoSight: Residual Edge-Guided Depth Fusion and Fail-Safe Binaural Spatial Sonification for Visually Impaired Mobility Assistance}
 
 \author{
   \IEEEauthorblockN{EchoSight Research Team}
@@ -15,7 +15,7 @@
 \maketitle
 
 \begin{abstract}
-Sensory substitution devices (SSDs) translate visual scenes into spatial auditory cues for people with blindness and low vision (BLV). However, existing visual-to-audio prototypes suffer from background clutter in 2D edge sonification, blurry obstacle boundaries in lightweight monocular depth decoders, and a lack of end-to-end perception reliability guarantees during camera freeze, frame drops, or screen-reader conflicts. We present \textbf{EchoSight}, combining a lightweight dual-head network (\textbf{EchoDepthNet}) with a six-state reliability controller (\textbf{EchoSafe}) and decoupled accessible multi-channel feedback. EchoDepthNet introduces a \textbf{Residual Frequency-Guided Edge-Depth Fusion Module (Residual FG-EDFM)} that embeds a differentiable Rec.709 Sobel prior inside a MobileNetV3-Small encoder-decoder and injects edge-gated high-frequency boundary refinement via a residual shortcut to jointly predict dense normalized proximity maps and a $16\times 48$ binaural acoustic hazard matrix aligned with a $\pm 68^\circ$ Web Audio HRTF renderer. On a deterministic 3D corridor obstacle benchmark (15 epochs, seed=42), Residual FG-EDFM adds only $0.03\text{M}$ parameters ($+2.8\%$) while reducing AbsRel by $11.2\%$ ($0.4534 \to 0.4024$), RMSE by $16.8\%$ ($0.1739 \to 0.1447$), and acoustic hazard RMSE by $16.3\%$ ($0.1205 \to 0.1008$), and improving $\delta_1$ accuracy by $12.8\%$ ($0.2564 \to 0.2891$) at $99.1\text{ FPS}$ on CPU.
+Sensory substitution devices (SSDs) translate visual scenes into spatial auditory cues for people with blindness and low vision (BLV). However, existing visual-to-audio prototypes suffer from background clutter in 2D edge sonification, blurry obstacle boundaries in lightweight monocular depth decoders, and a lack of end-to-end perception reliability guarantees during camera freeze, frame drops, or screen-reader conflicts. We present \textbf{EchoSight}, combining a lightweight dual-head network (\textbf{EchoDepthNet}) with a six-state reliability controller (\textbf{EchoSafe}), strict Sobel/neural acoustic routing, and decoupled accessible multi-channel feedback. EchoDepthNet introduces a \textbf{Residual Edge-Guided Depth Fusion Module (Residual EG-DFM)} that embeds a differentiable spatial Rec.709 Sobel edge prior inside a MobileNetV3-Small encoder-decoder and injects edge-gated boundary refinement via a residual shortcut to jointly predict dense normalized proximity maps and a $16\times 48$ binaural acoustic matrix aligned with a $\pm 68^\circ$ Web Audio HRTF renderer. On a deterministic 3D corridor benchmark (15 epochs, pretrained MobileNetV3-Small, seed=42), Residual EG-DFM adds $0.03\text{M}$ parameters over the plain FPN baseline ($+2.8\%$) while improving RMSE ($0.0872 \to 0.0824$), $\delta_1$ ($0.8864 \to 0.8970$), and acoustic RMSE ($0.0583 \to 0.0577$) at $74.2\text{ FPS}$ on CPU, and executes live in Chromium via \texttt{onnxruntime-web} at $44\text{ ms}$ per frame.
 \end{abstract}
 
 \begin{IEEEkeywords}

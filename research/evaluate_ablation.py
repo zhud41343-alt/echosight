@@ -17,13 +17,19 @@ from train import SyntheticObstacleDepthDataset, compute_depth_metrics
 
 
 def benchmark_model(ckpt_path: Path, model_kind: str, device: torch.device):
+    if not ckpt_path.exists():
+        raise FileNotFoundError(
+            f"ERROR: Required trained checkpoint '{ckpt_path}' not found. "
+            "Refusing to silently evaluate untrained random weights."
+        )
     if model_kind == "fastdepth":
         model = FastDepthLite(pretrained_backbone=False).to(device)
     else:
         model = EchoDepthNet(pretrained_backbone=False, use_edge_fusion=(model_kind == "full")).to(device)
-    if ckpt_path.exists():
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-        model.load_state_dict(ckpt["model_state"])
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    if "model_state" not in ckpt:
+        raise ValueError(f"ERROR: Checkpoint '{ckpt_path}' is missing 'model_state'.")
+    model.load_state_dict(ckpt["model_state"], strict=True)
     model.eval()
 
     ds = SyntheticObstacleDepthDataset(num_samples=64, img_size=256, seed=999)

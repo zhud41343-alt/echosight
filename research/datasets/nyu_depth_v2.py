@@ -40,7 +40,10 @@ def derive_acoustic_matrix(prox_t: torch.Tensor) -> torch.Tensor:
 class NYUDepthV2MatDataset(Dataset):
     """
     Loads official `nyu_depth_v2_labeled.mat` (HDF5 format).
-    Applies standard Eigen crop [45:471, 41:601] and train/val split (795 / 654).
+    Applies standard Eigen crop [45:471, 41:601].
+    If `splits_mat_path` (official Nathan Silberman `splits.mat` with `trainNdxs`/`testNdxs`)
+    is provided, uses the exact official 795/654 split; otherwise falls back to a deterministic
+    disjoint 795/654 partition (explicitly NOT the official scene split).
     """
 
     def __init__(
@@ -49,6 +52,7 @@ class NYUDepthV2MatDataset(Dataset):
         split: str = "train",
         img_size: int = 256,
         eigen_crop: bool = True,
+        splits_mat_path: Optional[str] = None,
     ):
         import h5py
 
@@ -61,8 +65,18 @@ class NYUDepthV2MatDataset(Dataset):
 
         with h5py.File(self.mat_path, "r") as f:
             total = f["images"].shape[0]
-        n_train = min(795, int(total * 0.55)) if total == 1449 else int(total * 0.85)
-        self.indices = list(range(0, n_train)) if split == "train" else list(range(n_train, total))
+
+        if splits_mat_path and Path(splits_mat_path).exists():
+            import scipy.io as sio
+            sp = sio.loadmat(splits_mat_path)
+            key = "trainNdxs" if split == "train" else "testNdxs"
+            # Official splits.mat uses 1-based MATLAB indices
+            self.indices = [int(i) - 1 for i in sp[key].reshape(-1)]
+            self.split_mode = "official_splits_mat"
+        else:
+            n_train = min(795, int(total * 0.55)) if total == 1449 else int(total * 0.85)
+            self.indices = list(range(0, n_train)) if split == "train" else list(range(n_train, total))
+            self.split_mode = "sequential_fallback_non_official"
         self._h5 = None
 
     def _ensure_open(self):
