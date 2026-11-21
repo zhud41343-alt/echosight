@@ -4,6 +4,7 @@ import {
   EchoSafeSignals,
   evaluateEchoSafe,
 } from '../engine/echoSafe';
+import { computeDistanceErrorStats, DistanceEvalSample } from '../engine/aiObjectDetector';
 
 interface FaultScenario {
   id: string;
@@ -134,9 +135,62 @@ const CLAIM_ROWS: Array<{
 
 export const ValidationPanel: React.FC = () => {
   const [faultId, setFaultId] = useState<string>('null_frame');
+  const [fieldSamples, setFieldSamples] = useState<
+    Array<{ id: number; label: string; refM: number; predM: number | null }>
+  >([]);
+  const [sampleLabel, setSampleLabel] = useState('椅子');
+  const [refInput, setRefInput] = useState('2.0');
+  const [predInput, setPredInput] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
+
   const now = 100_000;
   const fault = FAULT_SCENARIOS.find((f) => f.id === faultId) || FAULT_SCENARIOS[0];
   const evaluated = evaluateEchoSafe(fault.buildSignals(now), now);
+
+  const evalInput: DistanceEvalSample[] = fieldSamples.map((s) => ({
+    referenceMeters: s.refM,
+    predictedMeters: s.predM,
+  }));
+  const fieldReport = computeDistanceErrorStats(evalInput);
+
+  const handleAddSample = () => {
+    const refM = Number.parseFloat(refInput);
+    if (!Number.isFinite(refM) || refM <= 0 || refM > 20) return;
+    const trimmed = predInput.trim();
+    const predM = trimmed === '' ? null : Number.parseFloat(trimmed);
+    if (trimmed !== '' && (!Number.isFinite(predM) || predM! <= 0 || predM! > 30)) return;
+    setFieldSamples((prev) => [
+      ...prev,
+      { id: Date.now(), label: sampleLabel.trim() || '参考物', refM, predM },
+    ]);
+    setPredInput('');
+    setCopyStatus('');
+  };
+
+  const handleCopyMarkdown = async () => {
+    if (fieldSamples.length === 0) return;
+    const rows = fieldSamples
+      .map(
+        (s, i) =>
+          `| ${i + 1} | ${s.label} | ${s.refM.toFixed(2)} | ${s.predM !== null ? s.predM.toFixed(2) : '拒判/未知'} | ${s.predM !== null ? Math.abs(s.predM - s.refM).toFixed(2) : '--'} |`
+      )
+      .join('\n');
+    const md = [
+      '### EchoSight 线下卷尺实拍测距误差记录',
+      `- 样本总数：${fieldReport.total}（有效：${fieldReport.validCount}，拒判/未知：${fieldReport.unknownCount}）`,
+      `- 整体 MAE：${fieldReport.maeMeters ?? '--'} m ｜ P90 误差：${fieldReport.p90ErrorMeters ?? '--'} m`,
+      '',
+      '| # | 目标 | 卷尺实测(m) | 系统估算(m) | 绝对误差(m) |',
+      '| :---: | :--- | :---: | :---: | :---: |',
+      rows,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopyStatus('已复制 Markdown 实测报告到剪贴板');
+    } catch {
+      setCopyStatus('浏览器限制剪贴板写入，请手动复制统计数值');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -225,6 +279,113 @@ export const ValidationPanel: React.FC = () => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Honest Field-Test Distance MAE/P90 Recorder (Starts 100% Empty — Zero Fabricated Data) */}
+      <div className="panel p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="eyebrow">Field-Test Tool · Real Tape-Measure Evaluator</div>
+            <h3 className="text-[16px] font-semibold text-ink mt-0.5">
+              线下卷尺实拍测距误差记录与 MAE / P90 即时计算器
+            </h3>
+          </div>
+          <span className="chip">默认空白 · 绝不预填模拟数据</span>
+        </div>
+        <p className="text-[12.5px] text-ink-2 leading-relaxed">
+          供团队或评委在真实室内/室外用卷尺采集数据：输入每组真实距离与系统估算值（若系统输出“距离未知/裁切拒判”，估算值留空即可），即时调用{' '}
+          <code className="num">computeDistanceErrorStats()</code> 计算整体与分段 MAE / P90，并一键导出 Markdown 实测表格。
+        </p>
+
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-[12px] text-ink-2 space-y-1">
+            <div>目标名称</div>
+            <input
+              type="text"
+              value={sampleLabel}
+              onChange={(e) => setSampleLabel(e.target.value)}
+              className="w-24 rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink"
+            />
+          </label>
+          <label className="text-[12px] text-ink-2 space-y-1">
+            <div>卷尺实测(m)</div>
+            <input
+              type="number"
+              step="0.1"
+              min="0.2"
+              max="20"
+              value={refInput}
+              onChange={(e) => setRefInput(e.target.value)}
+              className="w-24 rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink num"
+            />
+          </label>
+          <label className="text-[12px] text-ink-2 space-y-1">
+            <div>系统估算(m，拒判留空)</div>
+            <input
+              type="number"
+              step="0.1"
+              min="0.2"
+              max="30"
+              placeholder="留空=拒判"
+              value={predInput}
+              onChange={(e) => setPredInput(e.target.value)}
+              className="w-32 rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink num"
+            />
+          </label>
+          <button type="button" onClick={handleAddSample} className="btn btn-primary btn-sm">
+            记录该组样本
+          </button>
+          {fieldSamples.length > 0 && (
+            <>
+              <button type="button" onClick={handleCopyMarkdown} className="btn btn-sm">
+                复制 Markdown 报告
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFieldSamples([]);
+                  setCopyStatus('');
+                }}
+                className="btn btn-sm"
+              >
+                清空
+              </button>
+            </>
+          )}
+        </div>
+
+        {copyStatus && <div className="text-[12px] text-ok">{copyStatus}</div>}
+
+        {fieldSamples.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 num text-[12px]">
+            <div className="panel-sunken p-3">
+              <div className="eyebrow">样本总数 / 有效</div>
+              <div className="text-ink text-[15px] mt-0.5">
+                {fieldReport.total} / {fieldReport.validCount}
+              </div>
+            </div>
+            <div className="panel-sunken p-3">
+              <div className="eyebrow">整体 MAE</div>
+              <div className="text-ink text-[15px] mt-0.5">
+                {fieldReport.maeMeters !== null ? `${fieldReport.maeMeters} m` : '--'}
+              </div>
+            </div>
+            <div className="panel-sunken p-3">
+              <div className="eyebrow">P90 绝对误差</div>
+              <div className="text-ink text-[15px] mt-0.5">
+                {fieldReport.p90ErrorMeters !== null ? `${fieldReport.p90ErrorMeters} m` : '--'}
+              </div>
+            </div>
+            <div className="panel-sunken p-3">
+              <div className="eyebrow">拒判 / 未知样本</div>
+              <div className="text-ink text-[15px] mt-0.5">{fieldReport.unknownCount}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="panel-sunken p-3 text-[12px] text-ink-3">
+            当前暂无线下实拍样本（0 条）。请使用真实卷尺采集后录入，系统绝不自动填充模拟结果。
+          </div>
+        )}
       </div>
     </div>
   );

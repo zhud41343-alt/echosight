@@ -145,6 +145,24 @@ export function App() {
     }
   }, [highContrast]);
 
+  // Global Alt+H shortcut to toggle High-Contrast Mode (Bluetooth keyboard / Braille display friendly)
+  useEffect(() => {
+    const onGlobalKey = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        setHighContrast((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKey);
+    return () => window.removeEventListener('keydown', onGlobalKey);
+  }, []);
+
   // Number keys 1-6 switch studio modules ONLY when in studio view
   useEffect(() => {
     if (appView !== 'studio') return;

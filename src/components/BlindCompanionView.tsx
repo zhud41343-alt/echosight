@@ -1028,6 +1028,42 @@ export const BlindCompanionView: React.FC = () => {
     }
   }, [abortSpeechRecognition, handleUtterance, say]);
 
+  // Hands-free Alt shortcuts for Bluetooth keyboards / Braille displays (Alt+S/Q/V/M)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        !e.altKey ||
+        e.ctrlKey ||
+        e.metaKey ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === 's') {
+        e.preventDefault();
+        void toggleCompanion();
+      } else if (k === 'q') {
+        e.preventDefault();
+        handleUtterance('前面识别到什么？');
+      } else if (k === 'v') {
+        e.preventDefault();
+        startTalking();
+      } else if (k === 'm') {
+        e.preventDefault();
+        setAudioStrategy((prev) => {
+          const next = prev === 'on_demand' ? 'concise_voice' : 'on_demand';
+          if (next === 'on_demand') spatialAudio.stopAllImmediate();
+          say(next === 'on_demand' ? '已切换为按需安静模式' : '已切换为简洁语音播报模式', 'USER_QUERY');
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUtterance, say, startTalking, toggleCompanion]);
+
   const isRunning = safeSnap.state === 'ACTIVE' || safeSnap.state === 'DEGRADED';
 
   return (
@@ -1230,6 +1266,11 @@ export const BlindCompanionView: React.FC = () => {
                 />
                 下次启动时开启「实验性单路环境异常声响提示」（默认关闭以减少误报干扰）
               </label>
+              <div className="text-[11px] text-ink-3">
+                键盘/盲文点显器快捷键：<span className="kbd">Alt+S</span> 启停 · <span className="kbd">Alt+Q</span> 询问前方 ·{' '}
+                <span className="kbd">Alt+V</span> 语音 · <span className="kbd">Alt+M</span> 安静切换 ·{' '}
+                <span className="kbd">Alt+H</span> 高对比
+              </div>
               <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-ink-3">
                 <span>
                   屏幕常亮保护（尽力申请）：{wakeLockActive ? '已激活' : '待机 / 设备不支持'} · 网络：{isOffline ? '离线' : '在线'}
