@@ -665,12 +665,21 @@ export class SpatialObjectTracker {
 
       if (bestTrack) {
         matchedTrackIds.add(bestTrack.trackId);
-        bestTrack.bbox = det.bbox;
+        // Smooth bbox with adaptive EMA so overlay boxes glide cleanly without lagging fast movers
+        const alpha = det.score >= 0.75 ? 0.82 : 0.62;
+        const smoothedBbox: [number, number, number, number] = [
+          bestTrack.bbox[0] * (1 - alpha) + det.bbox[0] * alpha,
+          bestTrack.bbox[1] * (1 - alpha) + det.bbox[1] * alpha,
+          bestTrack.bbox[2] * (1 - alpha) + det.bbox[2] * alpha,
+          bestTrack.bbox[3] * (1 - alpha) + det.bbox[3] * alpha,
+        ];
+        const smoothedDet: SpatialDetection = { ...det, bbox: smoothedBbox };
+        bestTrack.bbox = smoothedBbox;
         bestTrack.hits += 1;
         bestTrack.missedFrames = 0;
-        bestTrack.lastDetection = det;
+        bestTrack.lastDetection = smoothedDet;
         if (bestTrack.hits >= 2 || det.score >= 0.68) {
-          confirmed.push(det);
+          confirmed.push(smoothedDet);
         }
       } else {
         const newTrack: TrackedTarget = {
@@ -935,6 +944,20 @@ function rankDetections(items: SpatialDetection[]): SpatialDetection[] {
   });
 }
 
+const NOISY_SMALL_CLASSES = new Set([
+  'tie',
+  'toothbrush',
+  'remote',
+  'fork',
+  'spoon',
+  'knife',
+  'scissors',
+  'bird',
+  'kite',
+  'hair drier',
+  'mouse',
+]);
+
 /**
  * Runs object detection.
  * CRITICAL DATA ISOLATION RULE:
@@ -950,7 +973,11 @@ export async function detectSpatialObjects(
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
   if (loadedModel && !loadFailed) {
-    const preds = await loadedModel.detect(canvas, 8, 0.45);
+    const rawPreds = await loadedModel.detect(canvas, 6, 0.5);
+    // Suppress frequent indoor false positives on tiny/ambiguous classes unless high confidence
+    const preds = rawPreds.filter((p) =>
+      NOISY_SMALL_CLASSES.has(p.class) ? p.score >= 0.65 : p.score >= 0.5
+    );
     if (preds.length > 0) {
       const mapped: SpatialDetection[] = preds.map((p) => {
         const dir = computeDirectionMeta(p.bbox, canvas.width);
@@ -1046,15 +1073,25 @@ export function buildSpatialDetectionNotification(
     };
   }
 
-  const top = detections.slice(0, 3);
+  const top = detections.slice(0, force ? 3 : 2);
   const signature = top.map((d) => `${d.direction}-${d.distance}-${d.labelZh}`).join('|');
   const hasNearHazard = top.some((d) => d.priority === 'danger' && d.distance === '近距离');
 
   const summary = top
     .map((d) => {
-      const distPart = d.distance === '未知' ? '距离未知' : d.distanceText;
-      const prefix = d.priority === 'danger' && d.distance === '近距离' ? '提示，' : '';
-      return `${prefix}${d.direction}${distPart}检测到${d.labelZh}`;
+      // Keep speech crisp & natural without repeating "（未标定粗估）" on every item
+      const spokenDist =
+        d.distance === '未知'
+          ? '距离未知'
+          : d.distanceCalibrated
+            ? d.distanceText
+            : d.distance === '近距离'
+              ? '较近'
+              : d.distance === '中距离'
+                ? '中距'
+                : '较远';
+      const prefix = d.priority === 'danger' && d.distance === '近距离' ? '注意，' : '';
+      return `${prefix}${d.direction}${spokenDist}有${d.labelZh}`;
     })
     .join('；');
 
@@ -1062,7 +1099,7 @@ export function buildSpatialDetectionNotification(
     text: summary,
     priority: force ? 'USER_QUERY' : hasNearHazard ? 'EMERGENCY' : 'AMBIENT',
     dedupeKey: signature,
-    cooldownMs: force ? 0 : hasNearHazard ? 5000 : 15000,
+    cooldownMs: force ? 0 : hasNearHazard ? 6000 : 22000,
   };
 }
 

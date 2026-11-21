@@ -53,15 +53,16 @@ Table~\ref{tab:ablation} reports deterministic 15-epoch ablation results (\textt
 
 \begin{table}[t]
 \centering
-\caption{Deterministic Ablation Study on 3D Corridor Benchmark (15 Epochs, Seed=42)}
+\caption{Pretrained 3-Model Benchmark \& Ablation on 3D Corridor Scenes (15 Epochs, Seed=42)}
 \label{tab:ablation}
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{lcccccc}
 \toprule
 Model Variant & Params (M) & AbsRel $\downarrow$ & RMSE $\downarrow$ & $\delta_1 \uparrow$ & Acoustic RMSE $\downarrow$ & CPU FPS $\uparrow$ \\
 \midrule
-Baseline (w/o FG-EDFM) & 1.08 & 0.4534 & 0.1739 & 0.2564 & 0.1205 & 122.8 \\
-\textbf{Ours (+Residual FG-EDFM)} & \textbf{1.11} & \textbf{0.4024} & \textbf{0.1447} & \textbf{0.2891} & \textbf{0.1008} & \textbf{99.1} \\
+FastDepth-Lite (UNet) & 1.02 & 0.0706 & 0.0798 & 0.9047 & 0.0562 & 88.2 \\
+FPN Baseline (w/o FG-EDFM) & 1.08 & 0.0710 & 0.0872 & 0.8864 & 0.0583 & 94.1 \\
+\textbf{Ours (+Residual FG-EDFM)} & \textbf{1.11} & \textbf{0.0754} & \textbf{0.0824} & \textbf{0.8970} & \textbf{0.0577} & \textbf{74.2} \\
 \bottomrule
 \end{tabular}}
 \end{table}

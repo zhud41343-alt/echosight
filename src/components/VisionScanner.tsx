@@ -35,13 +35,17 @@ import {
   LightAndColorReport,
   parseVoiceCommand,
 } from '../engine/blindAssistTools';
+import {
+  loadEchoDepthOnnxModel,
+  runEchoDepthInference,
+} from '../engine/echoDepthOnnx';
 
 const CANVAS_W = 480;
 const CANVAS_H = 300;
 const MATRIX_COLS = 48;
 const MATRIX_ROWS = 16;
 
-type ViewMode = 'source' | 'sobel' | 'matrix';
+type ViewMode = 'source' | 'sobel' | 'matrix' | 'depth';
 
 const PRESETS: { id: PresetSceneId; label: string; desc: string }[] = [
   { id: 'crosswalk', label: '斑马线与路口', desc: '信号灯 + 来车轮廓' },
@@ -69,6 +73,10 @@ export const VisionScanner: React.FC = () => {
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiStatus, setAiStatus] = useState<string>('');
+  const [depthStatus, setDepthStatus] = useState<string>('');
+  const [depthMs, setDepthMs] = useState<number | null>(null);
+  const depthHeatmapCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const depthBusyRef = useRef(false);
   const [autoSpeakAI, setAutoSpeakAI] = useState(false);
   const [detections, setDetections] = useState<SpatialDetection[]>([]);
   const detectionsRef = useRef<SpatialDetection[]>([]);
@@ -216,6 +224,8 @@ export const VisionScanner: React.FC = () => {
           dCtx.drawImage(sourceCanvasRef.current, 0, 0, CANVAS_W, CANVAS_H);
         } else if (viewMode === 'sobel' && edgeImageRef.current) {
           dCtx.putImageData(edgeImageRef.current, 0, 0);
+        } else if (viewMode === 'depth' && depthHeatmapCanvasRef.current) {
+          dCtx.drawImage(depthHeatmapCanvasRef.current, 0, 0, CANVAS_W, CANVAS_H);
         } else {
           // Acoustic matrix view (warm phosphor/amber instrument grid)
           dCtx.fillStyle = '#161512';
@@ -341,6 +351,51 @@ export const VisionScanner: React.FC = () => {
     rafId = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(rafId);
   }, [isScanning, scanSpeedMs, scaleMode, useHRTF, volume, viewMode, cameraActive, edgeThreshold, aiEnabled]);
+
+  // Run EchoDepthNet ONNX real-time neural depth & 48x16 acoustic hazard matrix when 'depth' view is active
+  useEffect(() => {
+    if (viewMode !== 'depth') return;
+    let cancelled = false;
+
+    const runOnce = async () => {
+      if (cancelled || depthBusyRef.current) return;
+      const src = sourceCanvasRef.current;
+      if (!src) return;
+      depthBusyRef.current = true;
+      try {
+        const out = await runEchoDepthInference(src);
+        if (!cancelled && out) {
+          if (!depthHeatmapCanvasRef.current) {
+            const hc = document.createElement('canvas');
+            hc.width = 256;
+            hc.height = 256;
+            depthHeatmapCanvasRef.current = hc;
+          }
+          const hCtx = depthHeatmapCanvasRef.current.getContext('2d');
+          hCtx?.putImageData(out.depthHeatmap, 0, 0);
+          matrixRef.current = out.acousticMatrix;
+          setDepthMs(out.inferenceMs);
+        }
+      } finally {
+        depthBusyRef.current = false;
+      }
+    };
+
+    void loadEchoDepthOnnxModel((msg) => {
+      if (!cancelled) setDepthStatus(msg);
+    }).then((ok) => {
+      if (ok && !cancelled) void runOnce();
+    });
+
+    const timer = window.setInterval(() => {
+      if (cameraActive) void runOnce();
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [viewMode, preset, uploadVersion, cameraActive]);
 
   // Run On-Device AI detection when enabled
   useEffect(() => {
@@ -737,6 +792,7 @@ export const VisionScanner: React.FC = () => {
                 { id: 'source' as ViewMode, label: '原始画面' },
                 { id: 'sobel' as ViewMode, label: 'Sobel 边缘' },
                 { id: 'matrix' as ViewMode, label: '声学矩阵' },
+                { id: 'depth' as ViewMode, label: '神经深度' },
               ].map((m) => (
                 <button
                   key={m.id}
@@ -789,6 +845,13 @@ export const VisionScanner: React.FC = () => {
                 <span className="screen-label">
                   {scanTelemetry.azimuthDeg > 0 ? `+${scanTelemetry.azimuthDeg}` : scanTelemetry.azimuthDeg}°
                   {scanTelemetry.freqHz ? ` · ${scanTelemetry.freqHz} Hz` : ''}
+                </span>
+              )}
+              {viewMode === 'depth' && (
+                <span className="screen-label text-amber">
+                  {depthMs !== null
+                    ? `EchoDepthNet ONNX · ${depthMs}ms`
+                    : depthStatus || 'EchoDepthNet 加载中…'}
                 </span>
               )}
             </div>

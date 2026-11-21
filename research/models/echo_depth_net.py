@@ -166,6 +166,51 @@ class EchoDepthNet(nn.Module):
         return depth_map, acoustic_matrix
 
 
+class FastDepthLite(nn.Module):
+    """
+    Comparison Baseline (FastDepth-style Lightweight UNet):
+    MobileNetV3-Small encoder with simple progressive bilinear upsampling + 3x3 depthwise-separable
+    decoder blocks (no FPN lateral fusion and no Residual FG-EDFM).
+    """
+
+    def __init__(self, pretrained_backbone: bool = False):
+        super().__init__()
+        weights = MobileNet_V3_Small_Weights.DEFAULT if pretrained_backbone else None
+        backbone = mobilenet_v3_small(weights=weights).features
+        self.encoder = backbone
+
+        def _up_block(in_ch: int, out_ch: int) -> nn.Module:
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False),
+                nn.BatchNorm2d(in_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True),
+            )
+
+        self.up4 = _up_block(576, 128)
+        self.up3 = _up_block(128, 64)
+        self.up2 = _up_block(64, 32)
+        self.depth_head = nn.Sequential(nn.Conv2d(32, 1, kernel_size=1), nn.Sigmoid())
+        self.acoustic_head = nn.Sequential(
+            BilinearResize2d((16, 48)),
+            nn.Conv2d(33, 1, kernel_size=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor):
+        h, w = x.shape[-2:]
+        feat = self.encoder(x)
+        x4 = self.up4(F.interpolate(feat, scale_factor=2, mode="bilinear", align_corners=False))
+        x3 = self.up3(F.interpolate(x4, scale_factor=2, mode="bilinear", align_corners=False))
+        x2 = self.up2(F.interpolate(x3, scale_factor=2, mode="bilinear", align_corners=False))
+        depth_low = self.depth_head(x2)
+        depth_map = F.interpolate(depth_low, size=(h, w), mode="bilinear", align_corners=False)
+        acoustic_matrix = self.acoustic_head(torch.cat([x2, depth_low], dim=1))
+        return depth_map, acoustic_matrix
+
+
 def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 

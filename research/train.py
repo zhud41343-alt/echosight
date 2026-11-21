@@ -19,7 +19,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 from losses.distillation_loss import EchoSightCompositeLoss
-from models.echo_depth_net import EchoDepthNet, count_parameters
+from models.echo_depth_net import EchoDepthNet, FastDepthLite, count_parameters
 
 
 def derive_acoustic_target(depth_tensor: torch.Tensor) -> torch.Tensor:
@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--img-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1.5e-3)
     parser.add_argument("--pretrained", action="store_true", help="Use ImageNet pretrained MobileNetV3 weights")
+    parser.add_argument("--model", type=str, default="echodepth", choices=["echodepth", "fastdepth"], help="Model architecture")
     parser.add_argument("--ablation-no-edge", action="store_true", help="Disable FG-EDFM for ablation study")
     parser.add_argument("--out-dir", type=str, default="outputs")
     args = parser.parse_args()
@@ -185,11 +186,14 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
-    model = EchoDepthNet(
-        pretrained_backbone=args.pretrained,
-        use_edge_fusion=not args.ablation_no_edge,
-    ).to(device)
-    print(f"[EchoDepthNet] Trainable Parameters: {count_parameters(model) / 1e6:.2f} M")
+    if args.model == "fastdepth":
+        model = FastDepthLite(pretrained_backbone=args.pretrained).to(device)
+    else:
+        model = EchoDepthNet(
+            pretrained_backbone=args.pretrained,
+            use_edge_fusion=not args.ablation_no_edge,
+        ).to(device)
+    print(f"[{args.model}] Trainable Parameters: {count_parameters(model) / 1e6:.2f} M")
 
     criterion = EchoSightCompositeLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -243,7 +247,12 @@ def main():
 
         if val_rmse < best_rmse:
             best_rmse = val_rmse
-            ckpt_name = "echodepth_no_edge.pt" if args.ablation_no_edge else "echodepth_best.pt"
+            if args.model == "fastdepth":
+                ckpt_name = "fastdepth_lite.pt"
+            elif args.ablation_no_edge:
+                ckpt_name = "echodepth_no_edge.pt"
+            else:
+                ckpt_name = "echodepth_best.pt"
             torch.save(
                 {
                     "model_state": model.state_dict(),

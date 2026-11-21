@@ -36,9 +36,10 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // 1. Cache-First for TensorFlow.js COCO-SSD model weights (immutable shards)
+  // 1. Cache-First for TensorFlow.js COCO-SSD weights & self-trained EchoDepthNet ONNX weights
   const isModelAsset =
-    url.hostname === 'storage.googleapis.com' && url.pathname.includes('/tfjs-models/');
+    (url.hostname === 'storage.googleapis.com' && url.pathname.includes('/tfjs-models/')) ||
+    (url.origin === self.location.origin && url.pathname.endsWith('.onnx'));
   if (isModelAsset) {
     event.respondWith(
       caches.open(MODEL_CACHE).then(async (cache) => {

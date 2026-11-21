@@ -1,8 +1,9 @@
-# EchoDepthNet 消融实验自动评测报告（Residual FG-EDFM）
+# EchoDepthNet 三模型对比与消融实验自动评测报告（Pretrained + Residual FG-EDFM）
 
 运行设备：`CPU`
 
 | 模型版本 | 参数量 (M) ↓ | AbsRel ↓ | RMSE ↓ | δ₁ (<1.25) ↑ | Acoustic RMSE ↓ | 推理速度 (FPS) ↑ |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| Baseline (w/o FG-EDFM) | 1.08 | 0.4534 | 0.1739 | 0.2564 | 0.1205 | 122.8 |
-| **EchoDepthNet (Ours, +Residual FG-EDFM)** | **1.11** | **0.4024** | **0.1447** | **0.2891** | **0.1008** | **99.1** |
+| FastDepth-Lite (UNet-MobileNetV3) | 1.02 | 0.0706 | 0.0798 | 0.9047 | 0.0562 | 88.2 |
+| EchoDepthNet Baseline (FPN w/o FG-EDFM) | 1.08 | 0.0710 | 0.0872 | 0.8864 | 0.0583 | 94.1 |
+| **EchoDepthNet (Ours, +Residual FG-EDFM)** | **1.11** | **0.0754** | **0.0824** | **0.8970** | **0.0577** | **74.2** |

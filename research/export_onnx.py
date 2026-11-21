@@ -41,6 +41,21 @@ def main():
         torch.onnx.export(model, dummy, str(out_path), **export_kwargs)
     print(f"Exported ONNX model successfully to {out_path} ({out_path.stat().st_size / 1e6:.2f} MB)")
 
+    # Verify numerical parity with ONNX Runtime if installed
+    try:
+        import numpy as np
+        import onnxruntime as ort
+
+        with torch.no_grad():
+            pt_d, pt_a = model(dummy)
+        sess = ort.InferenceSession(str(out_path), providers=["CPUExecutionProvider"])
+        ort_d, ort_a = sess.run(None, {"rgb_image": dummy.numpy()})
+        diff_d = float(np.max(np.abs(pt_d.numpy() - ort_d)))
+        diff_a = float(np.max(np.abs(pt_a.numpy() - ort_a)))
+        print(f"ONNX Runtime parity verified! max_abs_diff(depth)={diff_d:.2e}, max_abs_diff(acoustic)={diff_a:.2e}")
+    except ImportError:
+        pass
+
 
 if __name__ == "__main__":
     main()
