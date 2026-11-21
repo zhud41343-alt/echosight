@@ -22,17 +22,18 @@
 
 ## 二、核心工程创新
 
-### 创新一：EchoSafe V3 可靠性状态机与失效保护（Fail-Safe）
-传统视觉转语音原型只关注“检测到了什么”，EchoSafe（`src/engine/echoSafe.ts`）进一步严格校验“**结果是否可信、何时必须停止输出**”：
+### 创新一：EchoSafe V5 可靠性状态机与全链路失效保护（Fail-Safe）
+传统视觉转语音原型只关注“检测到了什么”，EchoSafe（`src/engine/echoSafe.ts`）沿实际执行链逐节点严格校验“**结果是否可信、何时必须停止输出**”：
 - **六状态精细管理**：`IDLE` / `INITIALIZING` / `ACTIVE` / `DEGRADED` / `UNAVAILABLE` / `DEMO`，彻底隔离真实摄像头数据（`REAL_CAMERA`）与模拟演示数据（`SIMULATED_SCENE`）。
-- **严格新鲜度与帧推进检测**：优先基于 `requestVideoFrameCallback`（回退检测 `video.currentTime` 真实推进），拒绝重复 `drawImage` 伪造画面新鲜度；首帧未到或首次推理未完成前绝不进入 `ACTIVE`。
+- **单调视频帧身份（`FrameTracker`）**：优先基于 `requestVideoFrameCallback`（回退检测 `video.currentTime` 真实推进），为每一帧真实新画面分配单调递增 `frameId`，防止低帧率摄像头下 AI 对同一帧重复推理并伪造两帧连续确认。
+- **连续声场即时熔断（`canEmitContinuousSpatialAudio` + `spatialAudio.stopAllImmediate()`）**：画面冻结、视频轨道断开、页面切后台或系统进入 `UNAVAILABLE` 时，立即中止 Sobel/HRTF 连续声场并释放活跃音频节点，杜绝“一边显示不可用、一边继续播放旧环境声音”。
 - **防异步竞态与流泄漏**：通过 `SessionGuard` 会话代次令牌与 `SingleFlightRunner` 单并发锁，支持初始化中途随时取消并主动释放迟到的 `MediaStream` 轨道，彻底消除旧会话结果回写。
 - **失效保护原则**：空检测结果绝不推导“前方安全/空旷/平整”；未标定相机仅输出保守距离区间，绝不虚报小数米精度；过街询问强制拒绝给出通行许可。
 
 ### 创新二：低认知负担的可控 3D 空间音频交互
 - **统一无竞态音频调度器（`src/engine/audioScheduler.ts`）**：建立 `EMERGENCY > USER_QUERY > AMBIENT` 三级优先级抢占、去重冷却、`playbackId` 回调守卫与统一单调时钟，彻底解决多模块语音互抢与旧回调覆盖状态的问题。
 - **4 种用户可选听觉提示策略**：默认采用 **「简洁语音优先」**（优先保护环境原声），同时支持切换 **低频空间提示 / 仅按需描述 / 实验性连续 3D HRTF 声场**。
-- **原生纵横比大视窗 + 2 帧时间稳定器**：实时摄像头按手机原生竖屏比例等比缩放（避免竖屏压扁失真），叠加实时识别框与 `DetectionStabilizer` 滤除单帧抖动误报。
+- **原生纵横比大视窗 + IoU 多目标空间追踪**：实时摄像头按手机原生比例等比缩放（避免竖屏压扁失真），叠加实时识别框与 `SpatialObjectTracker`（IoU + 中心距 + 独立 `frameId`），防止不同位置的同类物体误确认。
 
 ---
 
@@ -49,19 +50,19 @@
 - **03 指尖听画**：在示波器画布上自由涂鸦即可实时听见每一笔的 3D 方位与音高，支持音阶切换、撤销、PNG 导出与整幅画扫描回放。
 - **04 黑暗迷宫**：3 个递进关卡，在全黑模式下体验 8 方向射线追踪 + 3D HRTF 墙壁回声与出口和弦信标。
 - **05 原理与硬件**：呈现 Rec.709 + Sobel + TensorFlow.js + Web Audio HRTF 四阶段流水线、核心数学公式、穿戴硬件演进路线（手机挂绳+开放式骨传导耳机 → 轻量 AI 眼镜）与适用人群。
-- **06 技术验证**：提供 EchoSafe V3 故障注入对比演示（历史实现 vs EchoSafe 状态机）与分层能力证据矩阵。
+- **06 技术验证**：提供 EchoSafe V5 故障注入对比演示（历史实现 vs EchoSafe 状态机）与分层能力证据矩阵。
 
 ---
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：5 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`），**24/24 项用例全部通过**（覆盖空时间戳、画面冻结、`SessionGuard` 失效、`SpatialObjectTracker` IoU 空间追踪、全链路 `PerceptionPacket` 时间顺序校验、旧语音回调迟到与空间音互斥）。
-- **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**。
+- **自动化单元测试（`npm test` · Vitest v5.1.1）**：5 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`），**30/30 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、`canEmitContinuousSpatialAudio` 冻结即停、`SessionGuard` 失效、`SpatialObjectTracker` IoU 独立帧追踪、全链路 `PerceptionPacket` 时间顺序校验、旧语音回调迟到与空间音互斥）。
+- **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**（6 大实验台模块已按需懒加载并包裹 `ModuleErrorBoundary`）。
 - **真实浏览器多视口核验**：
-  - `1440×900` 物理摄像头实测：分离统计 **视觉处理 40fps / AI 实际推理 1.2fps / 单次推理 39ms**，全流程 **0 控制台报错**；
-  - `390×844` 与 `360×740` 手机视口：**0 横向溢出**；
-  - 完整工程审计、安全边界与受控用户研究方案均归档于仓库 `docs/` 目录。
-- **透明披露尚未完成项**：真实手机 VoiceOver/TalkBack 读屏全流程测试、真实室外标定测距数据集与真实视障用户受控共创实验尚处于待开展阶段（已在 `docs/USER_RESEARCH_PROTOCOL.md` 建立伦理与实验方案，不虚构任何实测数据）；视觉与音频在本地计算，但浏览器原生语音识别可能依赖浏览器厂商云服务。
+  - `1440×900` 桌面与物理摄像头实测：分离统计视觉帧率、AI 推理帧率与推理/端到端 P95 延迟（单机实测推理 P95 `257ms`，端到端 P95 `1205ms`，明确标注不适用于高速动态障碍独立避障），全流程 **0 控制台报错**；
+  - `390×844` 与 `360×740` 手机视口：**0 横向溢出**，移动端顶栏无折行遮挡；
+  - 完整工程审计、安全边界、受控用户研究方案与线下真机记录模板均归档于仓库 `docs/` 目录。
+- **透明披露尚未完成项**：真实手机 VoiceOver/TalkBack 读屏全流程测试、真实室外标定测距数据集与真实视障用户受控共创实验尚处于待开展阶段（已在 `docs/USER_RESEARCH_PROTOCOL.md` 与 `docs/FIELD_VERIFICATION_TEMPLATES.md` 建立伦理方案与空白记录模板，不虚构任何实测数据）；视觉与音频在本地计算，但浏览器原生语音识别可能依赖浏览器厂商云服务。
 
 ---
 

@@ -17,10 +17,12 @@ import { analyzeLightAndColor } from '../engine/blindAssistTools';
 import { respondToUserUtterance } from '../engine/xiaoGuangAssistant';
 import { AcousticThreatMonitor } from '../engine/acousticThreatDetector';
 import {
+  canEmitContinuousSpatialAudio,
   createInitialSignals,
   EchoSafeSignals,
   EchoSafeSnapshot,
   evaluateEchoSafe,
+  FrameTracker,
   isPerceptionPacketUsable,
   PerceptionPacket,
   PerformanceTelemetry,
@@ -84,6 +86,9 @@ export const BlindCompanionView: React.FC = () => {
   const singleFlightRef = useRef(new SingleFlightRunner());
   const metricsTrackerRef = useRef(new RuntimeMetricsTracker());
   const trackerRef = useRef(new SpatialObjectTracker());
+  const frameTrackerRef = useRef(new FrameTracker());
+  const lastEdgeFrameIdRef = useRef<number>(0);
+  const prevSafeStateRef = useRef<SystemModeState>('IDLE');
   const procSizeRef = useRef<{ w: number; h: number }>({ w: 640, h: 480 });
 
   // P0-4: Explicit SpeechRecognition lifecycle refs
@@ -194,8 +199,30 @@ export const BlindCompanionView: React.FC = () => {
     signalsRef.current.pageHidden = typeof document !== 'undefined' ? document.hidden : false;
 
     const snap = evaluateEchoSafe(signalsRef.current, now);
+    const prevState = prevSafeStateRef.current;
+    prevSafeStateRef.current = snap.state;
     setSafeSnap(snap);
     setPerf(metricsTrackerRef.current.getSnapshot(now));
+
+    if (snap.state === 'UNAVAILABLE' || snap.state === 'IDLE') {
+      spatialAudio.stopAllImmediate();
+      lastEdgeFrameIdRef.current = 0;
+      if (lowEdgeRef.current) {
+        lowEdgeRef.current = false;
+        setLowEdgeDense(false);
+      }
+      if (highEdgeRef.current) {
+        highEdgeRef.current = false;
+        setHighEdgeDense(false);
+      }
+      // Explicit fail-safe feedback on transition into UNAVAILABLE (works even when audio is muted/unavailable)
+      if (
+        snap.state === 'UNAVAILABLE' &&
+        (prevState === 'ACTIVE' || prevState === 'DEGRADED' || prevState === 'INITIALIZING')
+      ) {
+        setAssistantMessage(`实时感知已失效：${snap.userSummary}`);
+      }
+    }
 
     if (!snap.canTrustLivePerception) {
       if (packetRef.current !== null) {
@@ -233,6 +260,7 @@ export const BlindCompanionView: React.FC = () => {
     abortSpeechRecognition();
     stopVideoFrameWatcher();
     audioScheduler.clearAll();
+    spatialAudio.stopAllImmediate();
     acousticMonitorRef.current?.stop();
     acousticMonitorRef.current = null;
     if (videoRef.current?.srcObject) {
@@ -245,6 +273,8 @@ export const BlindCompanionView: React.FC = () => {
     };
     packetRef.current = null;
     trackerRef.current.reset();
+    frameTrackerRef.current.reset();
+    lastEdgeFrameIdRef.current = 0;
     setDetections([]);
     clearOverlayCanvas();
     setFinderTarget(null);
@@ -261,6 +291,7 @@ export const BlindCompanionView: React.FC = () => {
       abortSpeechRecognition();
       stopVideoFrameWatcher();
       audioScheduler.clearAll();
+      spatialAudio.stopAllImmediate();
       acousticMonitorRef.current?.stop();
       if (videoRef.current?.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
@@ -268,7 +299,7 @@ export const BlindCompanionView: React.FC = () => {
     };
   }, [abortSpeechRecognition, stopVideoFrameWatcher]);
 
-  // Page visibility lifecycle (background immediately invalidates packet & clears overlay)
+  // Page visibility lifecycle (background immediately invalidates packet, stops spatial audio & clears overlay)
   useEffect(() => {
     const onVisibility = () => {
       signalsRef.current.pageHidden = document.hidden;
@@ -277,9 +308,12 @@ export const BlindCompanionView: React.FC = () => {
         abortSpeechRecognition();
         packetRef.current = null;
         trackerRef.current.reset();
+        frameTrackerRef.current.reset();
+        lastEdgeFrameIdRef.current = 0;
         setDetections([]);
         clearOverlayCanvas();
         audioScheduler.clearAll();
+        spatialAudio.stopAllImmediate();
         refreshSafeState();
       } else if (!document.hidden && signalsRef.current.requestedLive) {
         const stream = videoRef.current?.srcObject as MediaStream | null;
@@ -290,6 +324,8 @@ export const BlindCompanionView: React.FC = () => {
         signalsRef.current.sessionStartedAt = performance.now();
         packetRef.current = null;
         trackerRef.current.reset();
+        frameTrackerRef.current.reset();
+        lastEdgeFrameIdRef.current = 0;
         setDetections([]);
         clearOverlayCanvas();
         spatialAudio.ensureContext();
@@ -321,6 +357,7 @@ export const BlindCompanionView: React.FC = () => {
       if (!sessionGuardRef.current.isValid(mySession)) return;
       if (signalsRef.current.cameraTrackLive && !signalsRef.current.pageHidden) {
         signalsRef.current.lastFrameAt = now;
+        frameTrackerRef.current.recordNewFrame(now);
         metricsTrackerRef.current.recordVisionFrame(now);
       }
       vfcHandleRef.current = vid.requestVideoFrameCallback!(onFrame);
@@ -339,6 +376,8 @@ export const BlindCompanionView: React.FC = () => {
 
     const mySession = sessionGuardRef.current.begin();
     trackerRef.current.reset();
+    frameTrackerRef.current.reset();
+    lastEdgeFrameIdRef.current = 0;
     const startTs = performance.now();
     signalsRef.current = {
       ...createInitialSignals(),
@@ -383,6 +422,9 @@ export const BlindCompanionView: React.FC = () => {
           metricsTrackerRef.current.recordMediaInterruption();
           packetRef.current = null;
           trackerRef.current.reset();
+          frameTrackerRef.current.reset();
+          lastEdgeFrameIdRef.current = 0;
+          spatialAudio.stopAllImmediate();
           setDetections([]);
           clearOverlayCanvas();
           refreshSafeState();
@@ -470,12 +512,29 @@ export const BlindCompanionView: React.FC = () => {
         if (!hasVfc && vid.currentTime !== lastVideoCurrentTimeRef.current) {
           lastVideoCurrentTimeRef.current = vid.currentTime;
           signalsRef.current.lastFrameAt = now;
+          frameTrackerRef.current.recordNewFrame(now);
           metricsTrackerRef.current.recordVisionFrame(now);
         }
 
-        // Throttle Sobel edge analysis to ~8fps on tiny 160x120 canvas so mobile video stays butter-smooth
-        if (signalsRef.current.lastFrameAt !== null && now - lastEdgeEvalRef.current >= 120) {
+        // P0-2 (V5): Gate Sobel edge analysis & continuous spatial audio strictly on fresh video frame + live EchoSafe
+        const audioGate = canEmitContinuousSpatialAudio(signalsRef.current, now);
+        const frameSnap = frameTrackerRef.current.getSnapshot();
+        if (!audioGate.allowed || frameSnap.latestFrameId === 0) {
+          if (lastEdgeFrameIdRef.current !== 0) {
+            lastEdgeFrameIdRef.current = 0;
+            spatialAudio.stopAllImmediate();
+            if (lowEdgeRef.current) {
+              lowEdgeRef.current = false;
+              setLowEdgeDense(false);
+            }
+            if (highEdgeRef.current) {
+              highEdgeRef.current = false;
+              setHighEdgeDense(false);
+            }
+          }
+        } else if (now - lastEdgeEvalRef.current >= 120) {
           lastEdgeEvalRef.current = now;
+          lastEdgeFrameIdRef.current = frameSnap.latestFrameId;
           const edgeCanvas = edgeCanvasRef.current;
           const eCtx = edgeCanvas?.getContext('2d', { willReadFrequently: true });
           if (edgeCanvas && eCtx) {
@@ -548,12 +607,18 @@ export const BlindCompanionView: React.FC = () => {
       }
 
       const mySession = sessionGuardRef.current.currentId;
-      const frameCapturedAt = signalsRef.current.lastFrameAt;
 
       await singleFlightRef.current.run(async () => {
         const src = sourceCanvasRef.current;
         const sCtx = src?.getContext('2d', { willReadFrequently: true });
         if (!src || !sCtx || cancelled || !sessionGuardRef.current.isValid(mySession)) return;
+
+        // P0-1 (V5): Require a genuinely NEW, fresh video frame before running AI inference
+        const claimedFrame = frameTrackerRef.current.claimNextFrameForInference(
+          performance.now(),
+          MAX_FRAME_AGE_MS
+        );
+        if (!claimedFrame) return;
 
         // Draw single clean frame at native aspect ratio right before inference (zero wasted 60fps copies)
         const vw = vid.videoWidth || 640;
@@ -577,19 +642,20 @@ export const BlindCompanionView: React.FC = () => {
           // P0-1 & P0-2: Verify SessionGuard BEFORE mutating tracker state or writing results!
           if (cancelled || !sessionGuardRef.current.isValid(mySession)) return;
 
-          const res = trackerRef.current.update(rawRes, targetW, targetH);
+          const res = trackerRef.current.update(rawRes, targetW, targetH, claimedFrame.frameId);
 
           signalsRef.current.lastInferenceAt = tEnd;
           signalsRef.current.lastInferenceDurationMs = duration;
           signalsRef.current.consecutiveInferenceFailures = 0;
-          metricsTrackerRef.current.recordInference(tEnd, duration, tEnd - frameCapturedAt);
+          metricsTrackerRef.current.recordInference(tEnd, duration, tEnd - claimedFrame.capturedAt);
 
           const snap = refreshSafeState();
           if (snap.canTrustLivePerception) {
             packetRef.current = {
               dataSource: 'REAL_CAMERA',
               sessionId: mySession,
-              capturedAt: frameCapturedAt,
+              frameId: claimedFrame.frameId,
+              capturedAt: claimedFrame.capturedAt,
               inferredAt: tEnd,
               expiresAt: tEnd + PACKET_TTL_MS,
               safeState: snap.state,
@@ -1051,6 +1117,9 @@ export const BlindCompanionView: React.FC = () => {
                 data-active={audioStrategy === st.id}
                 aria-pressed={audioStrategy === st.id}
                 onClick={() => {
+                  if (st.id !== 'continuous_sonification') {
+                    spatialAudio.stopAllImmediate();
+                  }
                   setAudioStrategy(st.id);
                   say(`已切换听觉策略：${st.label}`, 'USER_QUERY');
                 }}
