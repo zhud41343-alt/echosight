@@ -93,4 +93,52 @@ describe('Fail-Safe wording & anti-false-reassurance checks', () => {
     expect(report.mood).toBe('alert');
     expect(report.text).toContain('不可用');
   });
+
+  it('correctly routes voice intents: 开启声场 vs 继续, 静音 vs 取消静音, 寻物, 测光', () => {
+    const baseCtx = {
+      safeState: activeSnap,
+      detections: [],
+      metrics: {
+        leftDensity: 10,
+        centerDensity: 10,
+        rightDensity: 10,
+        edgeCoverage: 10,
+        navigationCue: '',
+      },
+      lowRegionEdgeDense: false,
+      highRegionEdgeDense: false,
+    };
+
+    // "开启声场" must NOT be hijacked by "开启" -> resume_all!
+    expect(respondToUserUtterance('开启声场', baseCtx).action).toEqual({
+      type: 'set_scan',
+      enabled: true,
+    });
+    expect(respondToUserUtterance('关掉声波', baseCtx).action).toEqual({
+      type: 'set_scan',
+      enabled: false,
+    });
+    expect(respondToUserUtterance('继续', baseCtx).action).toEqual({ type: 'resume_all' });
+    expect(respondToUserUtterance('暂停', baseCtx).action).toEqual({ type: 'pause_all' });
+
+    // Mute & unmute must both exist and be reachable
+    const muteRes = respondToUserUtterance('静音', baseCtx);
+    expect(muteRes.action).toEqual({ type: 'set_volume', delta: 'mute' });
+    expect(muteRes.text).toContain('取消静音');
+
+    expect(respondToUserUtterance('取消静音', baseCtx).action).toEqual({
+      type: 'set_volume',
+      delta: 'unmute',
+    });
+
+    expect(respondToUserUtterance('帮我找水杯', baseCtx).action).toEqual({
+      type: 'set_finder',
+      targetId: 'cup',
+      targetLabel: '水杯',
+    });
+
+    expect(respondToUserUtterance('开灯了吗', baseCtx).action).toEqual({
+      type: 'check_light_color',
+    });
+  });
 });

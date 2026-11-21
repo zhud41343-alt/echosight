@@ -534,7 +534,8 @@ export interface ModelLoadResult {
 }
 
 export async function loadOnDeviceAIModel(
-  onStatus?: (msg: string) => void
+  onStatus?: (msg: string) => void,
+  forceRetry = false
 ): Promise<ModelLoadResult> {
   if (loadedModel && loadedModelVariant) {
     onStatus?.(
@@ -550,7 +551,7 @@ export async function loadOnDeviceAIModel(
       loadMs: lastModelLoadMs ?? 0,
     };
   }
-  if (loadFailed) {
+  if (loadFailed && !forceRetry) {
     onStatus?.('端侧神经网络加载失败（实时识别已降级为不可用）');
     return {
       modelReady: false,
@@ -559,6 +560,9 @@ export async function loadOnDeviceAIModel(
       variant: 'none',
       loadMs: lastModelLoadMs ?? 0,
     };
+  }
+  if (forceRetry) {
+    loadFailed = false;
   }
 
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();

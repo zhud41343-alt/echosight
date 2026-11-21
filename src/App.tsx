@@ -1,13 +1,26 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Contrast, Play, Volume2 } from 'lucide-react';
 import { BlindCompanionView } from './components/BlindCompanionView';
-import { VisionScanner } from './components/VisionScanner';
-import { BlindSceneTheater } from './components/BlindSceneTheater';
-import { AcousticCanvas } from './components/AcousticCanvas';
-import { DarkMaze } from './components/DarkMaze';
-import { TechArchitecture } from './components/TechArchitecture';
-import { ValidationPanel } from './components/ValidationPanel';
 import { spatialAudio } from './engine/spatialAudio';
+
+const VisionScanner = lazy(() =>
+  import('./components/VisionScanner').then((m) => ({ default: m.VisionScanner }))
+);
+const BlindSceneTheater = lazy(() =>
+  import('./components/BlindSceneTheater').then((m) => ({ default: m.BlindSceneTheater }))
+);
+const AcousticCanvas = lazy(() =>
+  import('./components/AcousticCanvas').then((m) => ({ default: m.AcousticCanvas }))
+);
+const DarkMaze = lazy(() =>
+  import('./components/DarkMaze').then((m) => ({ default: m.DarkMaze }))
+);
+const TechArchitecture = lazy(() =>
+  import('./components/TechArchitecture').then((m) => ({ default: m.TechArchitecture }))
+);
+const ValidationPanel = lazy(() =>
+  import('./components/ValidationPanel').then((m) => ({ default: m.ValidationPanel }))
+);
 
 type AppView = 'companion' | 'studio';
 type TabId = 'scanner' | 'theater' | 'canvas' | 'maze' | 'arch' | 'validation';
@@ -79,8 +92,9 @@ export function App() {
     }
   }, [highContrast]);
 
-  // Number keys 1-4 switch modules when not focused on inputs
+  // Number keys 1-6 switch studio modules ONLY when in studio view
   useEffect(() => {
+    if (appView !== 'studio') return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
@@ -100,7 +114,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [appView]);
 
   const handleCalibrateHeadphones = () => {
     spatialAudio.playStereoCalibration(0.75);
@@ -145,22 +159,24 @@ export function App() {
             <button
               type="button"
               aria-pressed={highContrast}
+              aria-label={highContrast ? '切换回标准暖纸模式' : '切换纯黑高对比模式'}
               onClick={() => setHighContrast((v) => !v)}
               className={`btn btn-sm ${highContrast ? 'btn-active' : ''}`}
               title="切换纯黑高对比度大字显示模式"
             >
-              <Contrast className="h-3.5 w-3.5" />
+              <Contrast className="h-3.5 w-3.5" aria-hidden="true" />
               <span className="hidden sm:inline">{highContrast ? '标准纸面' : '高对比模式'}</span>
             </button>
             <button
               type="button"
+              aria-label="播放左右声道耳机校准音"
               onClick={handleCalibrateHeadphones}
-              className={`btn btn-sm hidden sm:inline-flex ${calibrating ? 'btn-active' : ''}`}
+              className={`btn btn-sm ${calibrating ? 'btn-active' : ''}`}
               title="依次在左、中、右播放提示音，确认耳机左右声道"
             >
-              <span className={`led ${calibrating ? 'led-on' : ''}`} />
-              <Volume2 className="h-3.5 w-3.5" />
-              {calibrating ? '左 · 中 · 右' : '耳机校准'}
+              <span className={`led ${calibrating ? 'led-on' : ''}`} aria-hidden="true" />
+              <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">{calibrating ? '左 · 中 · 右' : '耳机校准'}</span>
             </button>
           </div>
         </div>
@@ -314,12 +330,20 @@ export function App() {
           role="tabpanel"
           tabIndex={0}
         >
-          {activeTab === 'scanner' && <VisionScanner />}
-          {activeTab === 'theater' && <BlindSceneTheater />}
-          {activeTab === 'canvas' && <AcousticCanvas />}
-          {activeTab === 'maze' && <DarkMaze />}
-          {activeTab === 'arch' && <TechArchitecture />}
-          {activeTab === 'validation' && <ValidationPanel />}
+          <Suspense
+            fallback={
+              <div className="panel p-8 text-center text-[13.5px] text-ink-2">
+                正在加载模块…
+              </div>
+            }
+          >
+            {activeTab === 'scanner' && <VisionScanner />}
+            {activeTab === 'theater' && <BlindSceneTheater />}
+            {activeTab === 'canvas' && <AcousticCanvas />}
+            {activeTab === 'maze' && <DarkMaze />}
+            {activeTab === 'arch' && <TechArchitecture />}
+            {activeTab === 'validation' && <ValidationPanel />}
+          </Suspense>
         </section>
           </>
         )}

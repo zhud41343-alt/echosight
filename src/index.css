@@ -15,16 +15,17 @@
   --color-line-strong: #c4bdae;
 
   --color-ink: #1b1a17;
-  --color-ink-2: #55524b;
-  --color-ink-3: #8a867d;
+  --color-ink-2: #4f4c45;
+  --color-ink-3: #5f5c54;
 
   --color-signal: #e4572e;
-  --color-signal-ink: #b5401c;
+  --color-signal-btn: #c2411a;
+  --color-signal-ink: #a63715;
   --color-signal-soft: #fae4d9;
 
-  --color-ok: #2f6b4c;
+  --color-ok: #265c40;
   --color-ok-soft: #e0ece4;
-  --color-warn: #a86a12;
+  --color-warn: #854d0e;
   --color-warn-soft: #f5ead6;
 
   --color-screen: #161512;
@@ -188,8 +189,8 @@ html[data-high-contrast="true"] .tile[data-active="true"] {
     color: #fff;
   }
   .btn-signal {
-    background: var(--color-signal);
-    border-color: var(--color-signal);
+    background: var(--color-signal-btn);
+    border-color: var(--color-signal-btn);
     color: #fff;
   }
   .btn-signal:hover:not(:disabled) {

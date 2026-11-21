@@ -184,9 +184,17 @@ export function respondToUserUtterance(
     };
   }
 
+  if (text.includes('取消静音') || text.includes('恢复声音') || text.includes('恢复播报')) {
+    return {
+      text: '已恢复简洁语音提示与声场音量。',
+      action: { type: 'set_volume', delta: 'unmute' },
+      mood: 'calm',
+    };
+  }
+
   if (text.includes('静音') || text.includes('闭嘴') || text.includes('安静')) {
     return {
-      text: '已静音连续声场。',
+      text: '已关闭连续声场与主动播报，切换为按需静音模式。你主动提问时我仍会回答，说“取消静音”即可恢复。',
       action: { type: 'set_volume', delta: 'mute' },
       mood: 'calm',
     };
@@ -208,22 +216,6 @@ export function respondToUserUtterance(
     };
   }
 
-  if (text.includes('暂停') || text.includes('先停')) {
-    return {
-      text: '已暂停实时感知。',
-      action: { type: 'pause_all' },
-      mood: 'calm',
-    };
-  }
-
-  if (text.includes('继续') || text.includes('开启')) {
-    return {
-      text: '正在恢复实时感知。',
-      action: { type: 'resume_all' },
-      mood: 'calm',
-    };
-  }
-
   if (text.includes('关掉声波') || text.includes('关闭声场') || text.includes('只听语音')) {
     return {
       text: '已关闭连续 3D 声场，仅保留状态与查询语音。',
@@ -236,6 +228,22 @@ export function respondToUserUtterance(
     return {
       text: '已打开连续 3D 声场。',
       action: { type: 'set_scan', enabled: true },
+      mood: 'calm',
+    };
+  }
+
+  if (text.includes('暂停') || text.includes('先停')) {
+    return {
+      text: '已暂停实时感知。',
+      action: { type: 'pause_all' },
+      mood: 'calm',
+    };
+  }
+
+  if (text.includes('继续') || text.includes('开启')) {
+    return {
+      text: '正在恢复实时感知。',
+      action: { type: 'resume_all' },
       mood: 'calm',
     };
   }

@@ -436,7 +436,7 @@ export const BlindCompanionView: React.FC = () => {
       signalsRef.current.microphoneAvailable = micOk;
     }
 
-    const loadRes = await loadOnDeviceAIModel();
+    const loadRes = await loadOnDeviceAIModel(undefined, true);
     if (!sessionGuardRef.current.isValid(mySession)) return;
 
     metricsTrackerRef.current.setModelLoadMs(loadRes.loadMs);
@@ -711,11 +711,13 @@ export const BlindCompanionView: React.FC = () => {
       } else if (reply.action.type === 'set_volume') {
         const d = reply.action.delta;
         if (d === 'mute') {
+          // Only silence continuous/ambient cues — NEVER silence user-query replies!
           setVolume(0);
-          audioScheduler.setMuted(true);
+          setAudioStrategy('on_demand');
         } else if (d === 'unmute') {
           audioScheduler.setMuted(false);
           setVolume(0.55);
+          setAudioStrategy('concise_voice');
         } else {
           setVolume((v) => Math.max(0.1, Math.min(1, v + d)));
         }
