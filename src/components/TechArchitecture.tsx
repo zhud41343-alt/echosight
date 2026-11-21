@@ -3,62 +3,62 @@ import React from 'react';
 const STAGES = [
   {
     no: '01',
-    title: '多源画面采集',
-    desc: '实时摄像头、本地图片、手绘画板与 4 个内置场景。全部在浏览器内处理，不依赖服务器。',
-    tag: 'getUserMedia · Canvas',
+    title: '真实帧采集与 EchoSafe 校验',
+    desc: '通过 FrameTracker 为每帧真实摄像头新画面分配单调 frameId，严禁同帧重复推理与模拟数据混入实时助行。',
+    tag: 'EchoSafe · FrameTracker',
   },
   {
     no: '02',
-    title: 'Sobel 边缘提取',
-    desc: 'Rec.709 灰度化后用 3×3 Sobel 卷积求梯度幅值，再结合亮度加权，下采样为 48×16 的声学矩阵。',
-    tag: 'Computer Vision',
+    title: 'EchoDepthNet 神经深度 + Sobel',
+    desc: '支持 3×3 Sobel 边缘提取，并已打通自研 1.11M EchoDepthNet（Residual FG-EDFM）ONNX 浏览器本地推理，同步输出近场深度图与 16×48 声学危险度矩阵。',
+    tag: 'ONNX Runtime · 44ms',
   },
   {
     no: '03',
-    title: '端侧语义识别',
-    desc: '可选加载 COCO-SSD（MobileNet v2）在本地 WebGL 推理，识别 80 类常见物体，给出方位与远近并语音播报。',
-    tag: 'TensorFlow.js',
+    title: '端侧语义识别与 IoU 追踪',
+    desc: '本地 WebGL 运行 COCO-SSD（80 类物体），经 IoU + 自适应 EMA 框体平滑稳定追踪，空检测绝不输出安全通行承诺。',
+    tag: 'TensorFlow.js · IoU',
   },
   {
     no: '04',
-    title: '双耳空间声合成',
-    desc: '水平位置映射为 HRTF 方位角，垂直位置映射为音高，边缘强度决定响度，逐列扫描形成连续的“声音图像”。',
-    tag: 'Web Audio · HRTF',
+    title: '可控 3D HRTF 与无障碍分发',
+    desc: '将声学矩阵映射为 ±68° 双耳 HRTF 立体声场，配合读屏器防冲突 ARIA Live 分发与画面冻结即时音频熔断。',
+    tag: 'Web Audio · WCAG 2.2',
   },
 ];
 
 const FORMULAS = [
-  { k: '边缘梯度', f: 'G = √(Gx² + Gy²)，G < T 时置 0' },
+  { k: '残差融合', f: 'Dk = SiLU(S(Fk) + γ · (Uk ⊙ Gk))' },
+  { k: '声学监督', f: 'A* = Pool16×48(0.65·D^1.35 + 0.35·|∇D|)' },
   { k: '方位映射', f: 'θ(x) = (2x / W − 1) × 68°' },
   { k: '音高映射', f: 'f(y) = 250 × (2800 / 250)^(1 − y / H) Hz' },
-  { k: '回声延迟', f: 'Δt = 50 ms + min(420 ms, d × 55 ms)' },
 ];
 
 const ROADMAP = [
   {
     phase: 'Phase 1',
-    status: '当前',
-    title: '浏览器原型',
-    desc: '零安装、零成本，用于科普体验与听觉空间感训练。',
+    status: '已完成',
+    title: '离线 PWA 与 EchoSafe 可靠性引擎',
+    desc: '零安装、支持 Service Worker 离线缓存、41 项自动化测试与读屏防冲突交互。',
   },
   {
     phase: 'Phase 2',
-    status: '进行中',
-    title: '端侧深度估计',
-    desc: '通过 WebGPU / ONNX Runtime Web 运行轻量深度模型，让“远近”也能被听见。',
+    status: '已上线',
+    title: '端侧 EchoDepthNet ONNX 实时推理',
+    desc: '已在「01 声画扫描 → 神经深度」上线自研 1.11M 模型（线上实测 44ms），让“远近”直接化为立体声场。',
   },
   {
     phase: 'Phase 3',
-    status: '规划',
-    title: '可穿戴设备',
-    desc: '移植到轻量 AI 眼镜与骨传导耳机，不遮挡环境声，服务真实出行。',
+    status: '规划中',
+    title: '真实用户共创与轻量穿戴硬件',
+    desc: '在伦理协议下开展视障受控试验，并将 ONNX 模型迁移至轻量 AI 眼镜与开放式骨传导耳机。',
   },
 ];
 
 const AUDIENCES = [
   {
-    group: '视障与弱视人群',
-    benefit: '零硬件成本获得环境轮廓、障碍方位与中文物体语音播报，弱视用户可一键开启 WCAG AAA 纯黑高对比大字模式。',
+    group: '视障与低视力人群',
+    benefit: '零硬件门槛体验环境轮廓、障碍方位与自然中文语音播报，支持纯黑高对比大字显示模式与读屏器防冲突模式（不可替代盲杖与过街判断）。',
   },
   {
     group: '盲校与康复训练机构',
