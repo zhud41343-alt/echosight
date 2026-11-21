@@ -118,4 +118,22 @@ describe('Monocular distance estimation & P0-1 SpatialObjectTracker', () => {
     tracker.reset();
     expect(tracker.getActiveTrackCount()).toBe(0);
   });
+
+  it('P0-1 (V5): SpatialObjectTracker NEVER confirms a medium-confidence target from duplicate frameId — requires 2 distinct frames', () => {
+    const tracker = new SpatialObjectTracker();
+    const chairF1 = makeDet('chair', [120, 160, 100, 140], 0.55);
+
+    // Frame 1 inferred once -> unconfirmed (hits = 1)
+    expect(tracker.update([chairF1], W, H, 1)).toEqual([]);
+    // Same Frame 1 accidentally re-inferred -> MUST NOT increment hits or confirm!
+    expect(tracker.update([chairF1], W, H, 1)).toEqual([]);
+    // Even out-of-order older frameId -> MUST NOT increment hits
+    expect(tracker.update([chairF1], W, H, 0)).toEqual([]);
+
+    // Brand-new Frame 2 with spatially matched chair -> NOW confirmed (2 distinct frames)!
+    const chairF2 = makeDet('chair', [124, 162, 100, 140], 0.56);
+    const confirmed = tracker.update([chairF2], W, H, 2);
+    expect(confirmed.length).toBe(1);
+    expect(confirmed[0].labelEn).toBe('chair');
+  });
 });

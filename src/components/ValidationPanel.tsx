@@ -86,14 +86,14 @@ const CLAIM_ROWS: Array<{
   evidence: string;
 }> = [
   {
-    claim: 'EchoSafe V4 严格新鲜度、SessionGuard、IoU 多目标追踪与全链路 Packet 校验',
+    claim: 'EchoSafe V5 严格新鲜度、FrameTracker 防重复推理、连续声场即时熔断与全链路 Packet 校验',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/echoSafe.test.ts + tests/distance.test.ts',
+    evidence: 'src/engine/echoSafe.ts + src/engine/aiObjectDetector.ts + tests/echoSafe.test.ts + tests/distance.test.ts（30/30 通过）',
   },
   {
-    claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + 单调时钟）',
+    claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + stopAllImmediate 节点清理）',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/audioScheduler.ts + tests/audioScheduler.test.ts',
+    evidence: 'src/engine/audioScheduler.ts + src/engine/spatialAudio.ts + tests/audioScheduler.test.ts',
   },
   {
     claim: 'SpeechRecognition 全生命周期管理（防重复实例、停止/卸载 abort、过期回调丢弃）',
@@ -106,9 +106,9 @@ const CLAIM_ROWS: Array<{
     evidence: 'src/engine/xiaoGuangAssistant.ts + tests/safetyWording.test.ts',
   },
   {
-    claim: 'WAI-ARIA Tabs 键盘操作与多视口（1440×900 / 390×844 / 360×740）0 横向溢出',
+    claim: 'WAI-ARIA Tabs 键盘操作、ErrorBoundary 与多视口（1440×900 / 390×844 / 360×740）0 横向溢出',
     tier: '已实际浏览器验证',
-    evidence: 'src/App.tsx + docs/REAL_BROWSER_TEST_REPORT.md（物理摄像头实测视觉 40fps / AI 1.2fps / 39ms）',
+    evidence: 'src/App.tsx + docs/REAL_BROWSER_TEST_REPORT.md（0 控制台错误；移动端顶栏折行已修复）',
   },
   {
     claim: '单目测距输入校验与 MAE/P90 误差统计工具（0.5–10m 合成基准）',

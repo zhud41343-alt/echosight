@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  canEmitContinuousSpatialAudio,
   createInitialSignals,
   evaluateEchoSafe,
+  FrameTracker,
   isPerceptionPacketUsable,
   PerceptionPacket,
   RuntimeMetricsTracker,
@@ -236,5 +238,105 @@ describe('EchoSafe V3 reliability state machine, SessionGuard & PerceptionPacket
     expect(snap.visionFps).toBeGreaterThan(snap.aiFps);
     expect(snap.p95InferenceMs).toBeGreaterThanOrEqual(snap.avgInferenceMs);
     expect(snap.p95E2eMs).toBeGreaterThanOrEqual(snap.avgE2eMs);
+  });
+
+  it('P0-1 (V5): FrameTracker prevents duplicate inference on same video frame (1fps cam / 3fps sched & 2fps cam / 5fps sched)', () => {
+    const ft = new FrameTracker();
+    // 1fps camera (frames at t=1000, 2000, 3000) vs 3fps inference scheduler (every 333ms)
+    let claimedCount = 0;
+    for (let t = 1000; t <= 3000; t += 333) {
+      if (t === 1000 || t === 1999 || t === 2998) {
+        ft.recordNewFrame(t);
+      }
+      const token = ft.claimNextFrameForInference(t, 2500);
+      if (token) claimedCount += 1;
+    }
+    expect(claimedCount).toBe(3);
+
+    // 2fps camera (frames every 500ms) vs 5fps scheduler (every 200ms) over 2 seconds = 4 frames
+    ft.reset();
+    const claimedIds: number[] = [];
+    for (let t = 0; t < 2000; t += 200) {
+      if (t % 500 === 0 || (t > 0 && Math.floor(t / 500) > Math.floor((t - 200) / 500))) {
+        ft.recordNewFrame(t);
+      }
+      const token = ft.claimNextFrameForInference(t, 2500);
+      if (token) claimedIds.push(token.frameId);
+    }
+    expect(claimedIds).toEqual([1, 2, 3, 4]);
+    // Polling again without a new frame returns null
+    expect(ft.claimNextFrameForInference(2100, 2500)).toBeNull();
+  });
+
+  it('P0-1 (V5): FrameTracker rejects frozen/stale frames and recovers cleanly on first new frame after freeze', () => {
+    const ft = new FrameTracker();
+    ft.recordNewFrame(1000);
+    // Camera freezes for 4 seconds (> 2500ms threshold) before scheduler polls
+    expect(ft.claimNextFrameForInference(5000, 2500)).toBeNull();
+    // Camera recovers with a brand-new frame at t=5200
+    const newId = ft.recordNewFrame(5200);
+    expect(newId).toBe(2);
+    const token = ft.claimNextFrameForInference(5250, 2500);
+    expect(token).toEqual({ frameId: 2, capturedAt: 5200 });
+  });
+
+  it('P0-2 (V5): canEmitContinuousSpatialAudio immediately stops continuous audio on video freeze, UNAVAILABLE, camera revoke, background, or suspended audio', () => {
+    const liveSignals = {
+      ...createInitialSignals(),
+      requestedLive: true,
+      sessionStartedAt: T - 5000,
+      cameraPermission: 'granted' as const,
+      cameraTrackLive: true,
+      lastFrameAt: T - 100,
+      modelState: 'ready' as const,
+      lastInferenceAt: T - 200,
+      audioState: 'running' as const,
+      pageHidden: false,
+    };
+    expect(canEmitContinuousSpatialAudio(liveSignals, T).allowed).toBe(true);
+
+    // Video frozen (> 2500ms without new frame) -> MUST stop immediately
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, lastFrameAt: T - 2600 }, T).allowed
+    ).toBe(false);
+
+    // Camera track ended / permission revoked -> MUST stop immediately
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, cameraTrackLive: false }, T).allowed
+    ).toBe(false);
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, cameraPermission: 'denied' }, T).allowed
+    ).toBe(false);
+
+    // Page hidden -> MUST stop immediately
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, pageHidden: true }, T).allowed
+    ).toBe(false);
+
+    // AudioContext suspended -> MUST stop immediately
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, audioState: 'suspended' }, T).allowed
+    ).toBe(false);
+
+    // Idle / stopped -> MUST stop immediately
+    expect(
+      canEmitContinuousSpatialAudio({ ...liveSignals, requestedLive: false }, T).allowed
+    ).toBe(false);
+  });
+
+  it('P0-1 (V5): isPerceptionPacketUsable rejects malformed frameId', () => {
+    const base: PerceptionPacket<string> = {
+      dataSource: 'REAL_CAMERA',
+      sessionId: 3,
+      frameId: 12,
+      capturedAt: T - 300,
+      inferredAt: T - 200,
+      expiresAt: T + 3000,
+      safeState: 'ACTIVE',
+      detections: ['chair'],
+    };
+    expect(isPerceptionPacketUsable(base, 3, 'ACTIVE', T)).toBe(true);
+    expect(isPerceptionPacketUsable({ ...base, frameId: 0 }, 3, 'ACTIVE', T)).toBe(false);
+    expect(isPerceptionPacketUsable({ ...base, frameId: -2 }, 3, 'ACTIVE', T)).toBe(false);
   });
 });

@@ -34,6 +34,48 @@ const TABS: { id: TabId; no: string; label: string; sub: string }[] = [
   { id: 'validation', no: '06', label: '技术验证', sub: 'EchoSafe 对比与边界' },
 ];
 
+/** Accessible ErrorBoundary for lazy-loaded Studio modules */
+class ModuleErrorBoundary extends React.Component<
+  { moduleKey: string; children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { moduleKey: string; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  componentDidUpdate(prevProps: { moduleKey: string }) {
+    if (prevProps.moduleKey !== this.props.moduleKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div role="alert" className="panel p-6 text-center space-y-3">
+          <div className="text-[15px] font-semibold text-ink">模块加载失败</div>
+          <p className="text-[13px] text-ink-2">
+            当前网络不稳定或资源块加载中断，你可以重试或切换其他模块。
+          </p>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false })}
+            className="btn btn-primary btn-sm"
+          >
+            重新加载模块
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /** Small hand-drawn style waveform used as a quiet brand mark. */
 const WaveMark: React.FC<{ className?: string }> = ({ className }) => (
   <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
@@ -126,23 +168,27 @@ export function App() {
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-line bg-paper">
-        <div className="mx-auto max-w-6xl px-5 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <WaveMark className="h-8 w-8 shrink-0" />
-            <div className="flex items-baseline gap-2.5 min-w-0">
-              <span className="title-serif text-[19px] leading-none">听见光影</span>
-              <span className="num text-[12px] text-ink-3 tracking-wide hidden sm:inline">EchoSight</span>
+        <div className="mx-auto max-w-6xl px-3 sm:px-5 h-16 flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <WaveMark className="h-7 w-7 sm:h-8 sm:w-8 shrink-0" />
+            <div className="flex items-baseline gap-2.5 shrink-0">
+              <span className="title-serif text-[15px] sm:text-[19px] leading-none whitespace-nowrap">
+                听见光影
+              </span>
+              <span className="num text-[12px] text-ink-3 tracking-wide hidden sm:inline whitespace-nowrap">
+                EchoSight
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Primary Mode Switch: Clean Blind Companion vs Full Research Studio */}
-            <div className="seg" role="group" aria-label="界面模式切换">
+            <div className="seg shrink-0" role="group" aria-label="界面模式切换">
               <button
                 type="button"
                 data-active={appView === 'companion'}
                 onClick={() => setAppView('companion')}
-                className="seg-item !py-1 !px-2.5 !text-[12px]"
+                className="seg-item !py-1 !px-2 sm:!px-2.5 !text-[11.5px] sm:!text-[12px] whitespace-nowrap"
               >
                 随身助行
               </button>
@@ -150,7 +196,7 @@ export function App() {
                 type="button"
                 data-active={appView === 'studio'}
                 onClick={() => setAppView('studio')}
-                className="seg-item !py-1 !px-2.5 !text-[12px]"
+                className="seg-item !py-1 !px-2 sm:!px-2.5 !text-[11.5px] sm:!text-[12px] whitespace-nowrap"
               >
                 专业实验台
               </button>
@@ -330,20 +376,22 @@ export function App() {
           role="tabpanel"
           tabIndex={0}
         >
-          <Suspense
-            fallback={
-              <div className="panel p-8 text-center text-[13.5px] text-ink-2">
-                正在加载模块…
-              </div>
-            }
-          >
-            {activeTab === 'scanner' && <VisionScanner />}
-            {activeTab === 'theater' && <BlindSceneTheater />}
-            {activeTab === 'canvas' && <AcousticCanvas />}
-            {activeTab === 'maze' && <DarkMaze />}
-            {activeTab === 'arch' && <TechArchitecture />}
-            {activeTab === 'validation' && <ValidationPanel />}
-          </Suspense>
+          <ModuleErrorBoundary moduleKey={activeTab}>
+            <Suspense
+              fallback={
+                <div className="panel p-8 text-center text-[13.5px] text-ink-2">
+                  正在加载模块…
+                </div>
+              }
+            >
+              {activeTab === 'scanner' && <VisionScanner />}
+              {activeTab === 'theater' && <BlindSceneTheater />}
+              {activeTab === 'canvas' && <AcousticCanvas />}
+              {activeTab === 'maze' && <DarkMaze />}
+              {activeTab === 'arch' && <TechArchitecture />}
+              {activeTab === 'validation' && <ValidationPanel />}
+            </Suspense>
+          </ModuleErrorBoundary>
         </section>
           </>
         )}

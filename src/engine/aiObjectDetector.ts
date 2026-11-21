@@ -402,6 +402,7 @@ let loadedModel: CocoModel | null = null;
 let loadedModelVariant: 'mobilenet_v2' | 'lite_mobilenet_v2' | null = null;
 let lastModelLoadMs: number | null = null;
 let loadFailed = false;
+let inFlightLoadPromise: Promise<ModelLoadResult> | null = null;
 
 const trafficLightStabilizer = new TrafficLightStabilizer(3);
 
@@ -442,12 +443,28 @@ interface TrackedTarget {
 export class SpatialObjectTracker {
   private tracks: TrackedTarget[] = [];
   private nextTrackId = 1;
+  private lastProcessedFrameId: number | null = null;
 
   public update(
     detections: SpatialDetection[],
     frameW = 640,
-    frameH = 480
+    frameH = 480,
+    frameId?: number
   ): SpatialDetection[] {
+    // P0-1 (V5): Duplicate or out-of-order frameId MUST NEVER increment hits or confirm tracks
+    if (
+      frameId !== undefined &&
+      this.lastProcessedFrameId !== null &&
+      frameId <= this.lastProcessedFrameId
+    ) {
+      return this.tracks
+        .filter((tr) => tr.missedFrames === 0 && (tr.hits >= 2 || tr.lastDetection.score >= 0.68))
+        .map((tr) => tr.lastDetection);
+    }
+    if (frameId !== undefined) {
+      this.lastProcessedFrameId = frameId;
+    }
+
     const diag = Math.hypot(Math.max(1, frameW), Math.max(1, frameH));
     const matchedTrackIds = new Set<number>();
     const confirmed: SpatialDetection[] = [];
@@ -520,6 +537,7 @@ export class SpatialObjectTracker {
   public reset() {
     this.tracks = [];
     this.nextTrackId = 1;
+    this.lastProcessedFrameId = null;
   }
 }
 
@@ -561,53 +579,62 @@ export async function loadOnDeviceAIModel(
       loadMs: lastModelLoadMs ?? 0,
     };
   }
+  if (inFlightLoadPromise) {
+    return inFlightLoadPromise;
+  }
   if (forceRetry) {
     loadFailed = false;
   }
 
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  try {
-    onStatus?.('正在启动本地 TensorFlow.js 推理引擎...');
-    const tf = await import('@tensorflow/tfjs');
-    await tf.ready();
-    onStatus?.('正在加载端侧 COCO-SSD（80 类物体）...');
-    const cocoSsd = await import('@tensorflow-models/coco-ssd');
+  inFlightLoadPromise = (async (): Promise<ModelLoadResult> => {
     try {
-      loadedModel = (await cocoSsd.load({ base: 'mobilenet_v2' })) as unknown as CocoModel;
-      loadedModelVariant = 'mobilenet_v2';
+      onStatus?.('正在启动本地 TensorFlow.js 推理引擎...');
+      const tf = await import('@tensorflow/tfjs');
+      await tf.ready();
+      onStatus?.('正在加载端侧 COCO-SSD（80 类物体）...');
+      const cocoSsd = await import('@tensorflow-models/coco-ssd');
+      try {
+        loadedModel = (await cocoSsd.load({ base: 'mobilenet_v2' })) as unknown as CocoModel;
+        loadedModelVariant = 'mobilenet_v2';
+      } catch {
+        loadedModel = (await cocoSsd.load({ base: 'lite_mobilenet_v2' })) as unknown as CocoModel;
+        loadedModelVariant = 'lite_mobilenet_v2';
+      }
+      lastModelLoadMs = Math.round(
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      );
+      onStatus?.(
+        loadedModelVariant === 'mobilenet_v2'
+          ? `端侧 MobileNet v2 就绪（耗时 ${lastModelLoadMs}ms，本地 WebGL 推理）`
+          : `端侧轻量 COCO-SSD 就绪（耗时 ${lastModelLoadMs}ms）`
+      );
+      return {
+        modelReady: true,
+        ready: true,
+        fallback: false,
+        variant: loadedModelVariant,
+        loadMs: lastModelLoadMs,
+      };
     } catch {
-      loadedModel = (await cocoSsd.load({ base: 'lite_mobilenet_v2' })) as unknown as CocoModel;
-      loadedModelVariant = 'lite_mobilenet_v2';
+      loadFailed = true;
+      lastModelLoadMs = Math.round(
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      );
+      onStatus?.('端侧神经网络加载失败：实时识别不可用，请勿依赖物体识别结果');
+      return {
+        modelReady: false,
+        ready: false,
+        fallback: true,
+        variant: 'none',
+        loadMs: lastModelLoadMs,
+      };
+    } finally {
+      inFlightLoadPromise = null;
     }
-    lastModelLoadMs = Math.round(
-      (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
-    );
-    onStatus?.(
-      loadedModelVariant === 'mobilenet_v2'
-        ? `端侧 MobileNet v2 就绪（耗时 ${lastModelLoadMs}ms，本地 WebGL 推理）`
-        : `端侧轻量 COCO-SSD 就绪（耗时 ${lastModelLoadMs}ms）`
-    );
-    return {
-      modelReady: true,
-      ready: true,
-      fallback: false,
-      variant: loadedModelVariant,
-      loadMs: lastModelLoadMs,
-    };
-  } catch {
-    loadFailed = true;
-    lastModelLoadMs = Math.round(
-      (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
-    );
-    onStatus?.('端侧神经网络加载失败：实时识别不可用，请勿依赖物体识别结果');
-    return {
-      modelReady: false,
-      ready: false,
-      fallback: true,
-      variant: 'none',
-      loadMs: lastModelLoadMs,
-    };
-  }
+  })();
+
+  return inFlightLoadPromise;
 }
 
 export function getLoadedModelState(): 'idle' | 'ready' | 'failed' {

@@ -1,9 +1,10 @@
-// EchoSafe V3 — Unified Perception Reliability State Machine, Session Guard & Packet Validator
+// EchoSafe V5 — Unified Perception Reliability State Machine, Session Guard, Frame Tracker & Packet Validator
 // Fixes:
-// - P0-1: Never treats lastFrameAt === null or lastInferenceAt === null as fresh/ACTIVE;
-//         requires real frame advancement (not repeated drawImage) and at least one fresh inference.
-// - P0-2: SessionGuard generation tokens prevent stale async camera/model/inference writebacks.
-// - P0-4: PerceptionPacket + isPerceptionPacketUsable enforce uniform validity checks everywhere.
+// - P0-1 (V3): Never treats lastFrameAt === null or lastInferenceAt === null as fresh/ACTIVE.
+// - P0-2 (V3): SessionGuard generation tokens prevent stale async camera/model/inference writebacks.
+// - P0-4 (V3/V4): PerceptionPacket + isPerceptionPacketUsable enforce uniform validity checks everywhere.
+// - P0-1 (V5): FrameTracker assigns monotonic frameId to each real video frame so AI never infers the same frame twice.
+// - P0-2 (V5): canEmitContinuousSpatialAudio blocks Sobel/HRTF continuous audio immediately on freeze or UNAVAILABLE.
 
 export type SystemModeState =
   | 'IDLE'
@@ -321,11 +322,114 @@ export class SessionGuard {
 }
 
 /**
- * P0-4: Unified perception result packet with explicit provenance & TTL.
+ * P0-1 (V5): Monotonic real video frame tracker.
+ * Guarantees each distinct camera frame gets a unique increasing frameId,
+ * preventing AI inference from running twice on the same video frame when
+ * camera FPS < inference scheduling cadence.
+ */
+export interface FrameToken {
+  frameId: number;
+  capturedAt: number;
+}
+
+export class FrameTracker {
+  private latestFrameId = 0;
+  private latestFrameCapturedAt: number | null = null;
+  private lastInferredFrameId = 0;
+
+  public recordNewFrame(capturedAt: number): number {
+    this.latestFrameId += 1;
+    this.latestFrameCapturedAt = capturedAt;
+    return this.latestFrameId;
+  }
+
+  public claimNextFrameForInference(
+    now: number,
+    maxFrameAgeMs = DEFAULT_ECHOSAFE_THRESHOLDS.frameStaleMs
+  ): FrameToken | null {
+    if (this.latestFrameId === 0 || this.latestFrameCapturedAt === null) {
+      return null;
+    }
+    if (this.latestFrameId <= this.lastInferredFrameId) {
+      return null;
+    }
+    const age = now - this.latestFrameCapturedAt;
+    if (age < -50 || age > maxFrameAgeMs) {
+      return null;
+    }
+    this.lastInferredFrameId = this.latestFrameId;
+    return {
+      frameId: this.latestFrameId,
+      capturedAt: this.latestFrameCapturedAt,
+    };
+  }
+
+  public getSnapshot(): {
+    latestFrameId: number;
+    latestFrameCapturedAt: number | null;
+    lastInferredFrameId: number;
+  } {
+    return {
+      latestFrameId: this.latestFrameId,
+      latestFrameCapturedAt: this.latestFrameCapturedAt,
+      lastInferredFrameId: this.lastInferredFrameId,
+    };
+  }
+
+  public reset(): void {
+    this.latestFrameId = 0;
+    this.latestFrameCapturedAt = null;
+    this.lastInferredFrameId = 0;
+  }
+}
+
+/**
+ * P0-2 (V5): Strict gate for continuous spatial audio sonification.
+ * Ensures continuous HRTF/Sobel audio NEVER plays when video is frozen,
+ * camera track ended, page is hidden, audio context is not running,
+ * or EchoSafe is UNAVAILABLE/IDLE.
+ */
+export function canEmitContinuousSpatialAudio(
+  signals: EchoSafeSignals,
+  now: number,
+  thresholds: EchoSafeThresholds = DEFAULT_ECHOSAFE_THRESHOLDS
+): { allowed: boolean; reason?: string } {
+  if (signals.isDemoMode) {
+    return { allowed: false, reason: '模拟模式不走实时连续声场' };
+  }
+  if (!signals.requestedLive || signals.initializing) {
+    return { allowed: false, reason: '实时感知未就绪' };
+  }
+  if (signals.pageHidden) {
+    return { allowed: false, reason: '页面已进入后台' };
+  }
+  if (signals.cameraPermission !== 'granted' || !signals.cameraTrackLive) {
+    return { allowed: false, reason: '摄像头不可用或已断开' };
+  }
+  if (signals.audioState !== 'running') {
+    return { allowed: false, reason: '音频上下文未运行' };
+  }
+  if (signals.lastFrameAt === null) {
+    return { allowed: false, reason: '尚未收到真实视频帧' };
+  }
+  const frameAge = now - signals.lastFrameAt;
+  if (frameAge < -50 || frameAge > thresholds.frameStaleMs) {
+    return { allowed: false, reason: '视频帧已过期或冻结' };
+  }
+  const snap = evaluateEchoSafe(signals, now, thresholds);
+  if (snap.state === 'UNAVAILABLE' || snap.state === 'IDLE' || snap.state === 'INITIALIZING') {
+    return { allowed: false, reason: snap.userSummary };
+  }
+  return { allowed: true };
+}
+
+/**
+ * P0-4: Unified perception result packet with explicit provenance, frame identity & TTL.
  */
 export interface PerceptionPacket<T> {
   dataSource: DataSourceKind;
   sessionId: number;
+  frameId?: number;
   capturedAt: number;
   inferredAt: number;
   expiresAt: number;
@@ -344,6 +448,9 @@ export function isPerceptionPacketUsable<T>(
   if (packet.dataSource !== 'REAL_CAMERA') return false;
   if (packet.sessionId !== expectedSessionId) return false;
   if (packet.safeState !== 'ACTIVE' || currentSafeState !== 'ACTIVE') return false;
+  if (packet.frameId !== undefined && (!Number.isInteger(packet.frameId) || packet.frameId <= 0)) {
+    return false;
+  }
 
   const { capturedAt, inferredAt, expiresAt } = packet;
   if (

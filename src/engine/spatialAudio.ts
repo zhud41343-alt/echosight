@@ -63,6 +63,39 @@ class SpatialAudioEngine {
   private masterGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private freqData: Uint8Array<ArrayBuffer> | null = null;
+  private activeOscillators = new Set<OscillatorNode>();
+
+  private trackOscillator(osc: OscillatorNode, onCleanup?: () => void) {
+    this.activeOscillators.add(osc);
+    osc.onended = () => {
+      this.activeOscillators.delete(osc);
+      onCleanup?.();
+    };
+  }
+
+  /**
+   * P0-2 (V5): Immediately silence and release all active real-time spatial oscillators.
+   * Called whenever EchoSafe transitions to UNAVAILABLE / IDLE, page hides, or session stops.
+   */
+  public stopAllImmediate() {
+    if (this.masterGain && this.ctx) {
+      try {
+        this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
+        this.masterGain.gain.setValueAtTime(0.0001, this.ctx.currentTime);
+      } catch {
+        // Ignore audio context state errors
+      }
+    }
+    this.activeOscillators.forEach((osc) => {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch {
+        // Ignore already-stopped oscillator
+      }
+    });
+    this.activeOscillators.clear();
+  }
 
   public ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -176,12 +209,13 @@ class SpatialAudioEngine {
       rowGain.gain.setValueAtTime(item.amp, now);
       osc.connect(rowGain);
       rowGain.connect(sliceGain);
-      if (idx === 0) {
-        osc.onended = () => {
+      this.trackOscillator(osc, () => {
+        rowGain.disconnect();
+        if (idx === 0) {
           sliceGain.disconnect();
           spatialNode.disconnect();
-        };
-      }
+        }
+      });
       osc.start(now);
       osc.stop(stopAt);
     });
@@ -228,10 +262,10 @@ class SpatialAudioEngine {
     gain.connect(panner);
     panner.connect(this.masterGain);
 
-    osc.onended = () => {
+    this.trackOscillator(osc, () => {
       gain.disconnect();
       panner.disconnect();
-    };
+    });
 
     osc.start(now);
     osc.stop(now + 0.17);
@@ -510,10 +544,10 @@ class SpatialAudioEngine {
       osc.connect(gain);
       gain.connect(panner);
       panner.connect(this.masterGain!);
-      osc.onended = () => {
+      this.trackOscillator(osc, () => {
         gain.disconnect();
         panner.disconnect();
-      };
+      });
       osc.start(t);
       osc.stop(t + 0.1);
     });
