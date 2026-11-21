@@ -181,14 +181,14 @@ export function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             {/* Primary Mode Switch: Clean Blind Companion vs Full Research Studio */}
             <div className="seg shrink-0" role="group" aria-label="界面模式切换">
               <button
                 type="button"
                 data-active={appView === 'companion'}
                 onClick={() => setAppView('companion')}
-                className="seg-item !py-1 !px-2 sm:!px-2.5 !text-[11.5px] sm:!text-[12px] whitespace-nowrap"
+                className="seg-item !py-1 !px-1.5 sm:!px-2.5 !text-[11px] sm:!text-[12px] whitespace-nowrap"
               >
                 随身助行
               </button>
@@ -196,7 +196,7 @@ export function App() {
                 type="button"
                 data-active={appView === 'studio'}
                 onClick={() => setAppView('studio')}
-                className="seg-item !py-1 !px-2 sm:!px-2.5 !text-[11.5px] sm:!text-[12px] whitespace-nowrap"
+                className="seg-item !py-1 !px-1.5 sm:!px-2.5 !text-[11px] sm:!text-[12px] whitespace-nowrap"
               >
                 专业实验台
               </button>
@@ -207,7 +207,7 @@ export function App() {
               aria-pressed={highContrast}
               aria-label={highContrast ? '切换回标准暖纸模式' : '切换纯黑高对比模式'}
               onClick={() => setHighContrast((v) => !v)}
-              className={`btn btn-sm ${highContrast ? 'btn-active' : ''}`}
+              className={`btn btn-sm !px-2 sm:!px-3 ${highContrast ? 'btn-active' : ''}`}
               title="切换纯黑高对比度大字显示模式"
             >
               <Contrast className="h-3.5 w-3.5" aria-hidden="true" />
@@ -217,7 +217,7 @@ export function App() {
               type="button"
               aria-label="播放左右声道耳机校准音"
               onClick={handleCalibrateHeadphones}
-              className={`btn btn-sm ${calibrating ? 'btn-active' : ''}`}
+              className={`btn btn-sm !px-2 sm:!px-3 ${calibrating ? 'btn-active' : ''}`}
               title="依次在左、中、右播放提示音，确认耳机左右声道"
             >
               <span className={`led ${calibrating ? 'led-on' : ''}`} aria-hidden="true" />

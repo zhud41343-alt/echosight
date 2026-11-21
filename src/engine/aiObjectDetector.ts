@@ -20,6 +20,83 @@ export interface CameraCalibration {
   deviceLabel?: string;
 }
 
+const CALIBRATION_STORAGE_KEY = 'echosight:camera_calibration_v1';
+
+/**
+ * Computes pinhole focal length from a known target class at a known physical distance (e.g. 2.0m).
+ * Rejects clipped/tiny boxes or unknown-height classes to prevent bad calibration.
+ */
+export function computeCameraCalibrationFromDetection(
+  labelEn: string,
+  bbox: [number, number, number, number],
+  knownDistanceMeters: number,
+  canvasH: number,
+  deviceLabel?: string
+): CameraCalibration | null {
+  const [, y, w, h] = bbox;
+  const realH = REAL_HEIGHT_M[labelEn];
+  if (!realH || !Number.isFinite(knownDistanceMeters) || knownDistanceMeters < 0.4 || knownDistanceMeters > 12) {
+    return null;
+  }
+  if (h < Math.max(20, canvasH * 0.08) || w < 10) return null;
+  if (y <= 2 || y + h >= canvasH - 2) return null;
+
+  const focalLengthPx = Math.round((h * knownDistanceMeters) / realH);
+  if (!Number.isFinite(focalLengthPx) || focalLengthPx < canvasH * 0.35 || focalLengthPx > canvasH * 3.5) {
+    return null;
+  }
+  return {
+    calibrated: true,
+    focalLengthPx,
+    referenceHeightPx: canvasH,
+    deviceLabel,
+  };
+}
+
+export function loadSavedCameraCalibration(): CameraCalibration | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(CALIBRATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CameraCalibration>;
+    if (
+      parsed.calibrated === true &&
+      typeof parsed.focalLengthPx === 'number' &&
+      parsed.focalLengthPx > 0 &&
+      typeof parsed.referenceHeightPx === 'number' &&
+      parsed.referenceHeightPx > 0
+    ) {
+      return {
+        calibrated: true,
+        focalLengthPx: parsed.focalLengthPx,
+        referenceHeightPx: parsed.referenceHeightPx,
+        deviceLabel: parsed.deviceLabel,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCameraCalibration(cal: CameraCalibration): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(cal));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function clearSavedCameraCalibration(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(CALIBRATION_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
 export interface DistanceEstimate {
   valid: boolean;
   calibrated: boolean;

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CameraCalibration,
   computeBboxIoU,
+  computeCameraCalibrationFromDetection,
   computeDistanceErrorStats,
   estimateMonocularDistance,
   REAL_HEIGHT_M,
@@ -135,5 +136,25 @@ describe('Monocular distance estimation & P0-1 SpatialObjectTracker', () => {
     const confirmed = tracker.update([chairF2], W, H, 2);
     expect(confirmed.length).toBe(1);
     expect(confirmed[0].labelEn).toBe('chair');
+  });
+
+  it('computes pinhole camera calibration from a 2.0m reference object and rejects clipped/invalid boxes', () => {
+    // Chair (0.85m) at 2.0m with focalLengthPx=500 -> h = 0.85 * 500 / 2.0 = 212.5px
+    const computed = computeCameraCalibrationFromDetection('chair', [200, 120, 120, 212.5], 2.0, 480);
+    expect(computed).not.toBeNull();
+    expect(computed!.calibrated).toBe(true);
+    expect(computed!.focalLengthPx).toBe(500);
+
+    // Using computed calibration yields calibrated conservative interval around 2.0m
+    const est = estimateMonocularDistance('chair', [200, 120, 120, 212.5], 640, 480, computed);
+    expect(est.calibrated).toBe(true);
+    expect(est.estimatedMeters).toBeCloseTo(2.0, 1);
+    expect(est.displayText).toMatch(/约\d+(\.\d+)?–\d+(\.\d+)?米/);
+
+    // Clipped box touching top/bottom edge is rejected for calibration
+    expect(computeCameraCalibrationFromDetection('chair', [200, 0, 120, 212], 2.0, 480)).toBeNull();
+    // Out-of-range distance or unknown class rejected
+    expect(computeCameraCalibrationFromDetection('zebra', [200, 120, 120, 212], 2.0, 480)).toBeNull();
+    expect(computeCameraCalibrationFromDetection('chair', [200, 120, 120, 212], 0.1, 480)).toBeNull();
   });
 });

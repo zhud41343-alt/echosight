@@ -5,8 +5,13 @@ import {
   SpatialSceneMetrics,
 } from '../engine/visionProcessor';
 import {
+  CameraCalibration,
+  clearSavedCameraCalibration,
+  computeCameraCalibrationFromDetection,
   detectSpatialObjects,
   loadOnDeviceAIModel,
+  loadSavedCameraCalibration,
+  saveCameraCalibration,
   SpatialDetection,
   SpatialObjectTracker,
   speakCue,
@@ -110,6 +115,12 @@ export const BlindCompanionView: React.FC = () => {
   const audioStrategyRef = useRef<AudioCueStrategy>('concise_voice');
   audioStrategyRef.current = audioStrategy;
   const [experimentalMicAlert, setExperimentalMicAlert] = useState(false);
+  const [calibration, setCalibration] = useState<CameraCalibration | null>(() =>
+    loadSavedCameraCalibration()
+  );
+  const calibrationRef = useRef<CameraCalibration | null>(calibration);
+  calibrationRef.current = calibration;
+  const [calibrationNote, setCalibrationNote] = useState<string>('');
   const [volume, setVolume] = useState(0.5);
   const [finderTarget, setFinderTarget] = useState<{ id: string; label: string } | null>(null);
   const [isListening, setIsListening] = useState(false);
@@ -635,7 +646,12 @@ export const BlindCompanionView: React.FC = () => {
 
         const t0 = performance.now();
         try {
-          const rawRes = await detectSpatialObjects(src, false, 'crosswalk');
+          const rawRes = await detectSpatialObjects(
+            src,
+            false,
+            'crosswalk',
+            calibrationRef.current
+          );
           const tEnd = performance.now();
           const duration = tEnd - t0;
 
@@ -1056,6 +1072,64 @@ export const BlindCompanionView: React.FC = () => {
               />
               下次启动时开启「实验性单路环境异常声响提示」（默认关闭以减少误报干扰）
             </label>
+
+            <div className="panel-sunken p-2.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="eyebrow">单目相机焦距标定（可选）</div>
+                  <div className="text-[11.5px] text-ink-2 mt-0.5">
+                    {calibration?.calibrated
+                      ? `已标定（f = ${calibration.focalLengthPx}px @ ${calibration.referenceHeightPx}px，输出 ±15% 保守区间）`
+                      : '未标定（默认仅输出近/中/远保守粗估，不输出小数米精度）'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!safeSnap.canTrustLivePerception || detections.length === 0}
+                    onClick={() => {
+                      const primary = detections[0];
+                      if (!primary) return;
+                      const nextCal = computeCameraCalibrationFromDetection(
+                        primary.labelEn,
+                        primary.bbox,
+                        2.0,
+                        procSizeRef.current.h,
+                        'User 2.0m Reference'
+                      );
+                      if (!nextCal) {
+                        setCalibrationNote(
+                          '标定未通过：请将已知高度物体（如行人/椅子）完整置于 2.0 米处且勿贴边裁切。'
+                        );
+                        return;
+                      }
+                      saveCameraCalibration(nextCal);
+                      setCalibration(nextCal);
+                      setCalibrationNote(
+                        `已按 2.0 米处「${primary.labelZh}」完成标定（f = ${nextCal.focalLengthPx}px）。`
+                      );
+                    }}
+                    className="btn btn-sm disabled:opacity-45"
+                  >
+                    按 2.0m 参考物标定
+                  </button>
+                  {calibration?.calibrated && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearSavedCameraCalibration();
+                        setCalibration(null);
+                        setCalibrationNote('已清除标定，恢复未标定保守粗估。');
+                      }}
+                      className="btn btn-sm"
+                    >
+                      清除标定
+                    </button>
+                  )}
+                </div>
+              </div>
+              {calibrationNote && <div className="text-[11px] text-signal-ink">{calibrationNote}</div>}
+            </div>
           </div>
         </details>
       </section>
