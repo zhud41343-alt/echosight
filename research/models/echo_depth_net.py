@@ -70,6 +70,17 @@ class FrequencyEdgeFusionBlock(nn.Module):
         return self.act(identity + self.res_scale * (fused * attn))
 
 
+class BilinearResize2d(nn.Module):
+    """ONNX-friendly parameter-free spatial resize (avoids AdaptiveAvgPool2d non-divisible export error)."""
+
+    def __init__(self, size: tuple[int, int]):
+        super().__init__()
+        self.size = size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.interpolate(x, size=self.size, mode="bilinear", align_corners=False)
+
+
 class EchoDepthNet(nn.Module):
     """
     Dual-Head Lightweight Architecture:
@@ -115,7 +126,7 @@ class EchoDepthNet(nn.Module):
             nn.Conv2d(33, 24, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(24),
             nn.SiLU(inplace=True),
-            nn.AdaptiveAvgPool2d((16, 48)),
+            BilinearResize2d((16, 48)),
             nn.Conv2d(24, 1, kernel_size=1),
             nn.Sigmoid(),
         )
