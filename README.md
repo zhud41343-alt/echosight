@@ -5,13 +5,13 @@
 > - **重要定位声明**：EchoSight 是浏览器端跨模态辅助感知与感官替代研究原型，**不可替代白手杖、导盲犬、定向行走（O&M）训练或现场交通安全判断**。
 
 ## 核心工程创新
-1. **EchoSafe V5 可靠性状态机与失效保护（`src/engine/echoSafe.ts`）**：
+1. **EchoSafe V6 可靠性状态机与全链路失效保护（`src/engine/echoSafe.ts`、`src/engine/accessibleNotifier.ts`）**：
    - 六状态精细管理（`IDLE` / `INITIALIZING` / `ACTIVE` / `DEGRADED` / `UNAVAILABLE` / `DEMO`），严格隔离真实摄像头（`REAL_CAMERA`）与模拟演示数据（`SIMULATED_SCENE`）。
-   - **单调视频帧标识（`FrameTracker`）**：为每一帧真实摄像头新画面分配单调递增 `frameId`，防止低帧率摄像头下 AI 对同一帧重复推理并伪造两帧连续确认。
-   - **连续声场即时熔断（`canEmitContinuousSpatialAudio` + `spatialAudio.stopAllImmediate()`）**：画面冻结、轨道断开、页面切入后台或系统进入 `UNAVAILABLE` 时，立即中止 Sobel/HRTF 连续声场并释放活跃音频节点。
-   - **IoU 多目标空间追踪（`SpatialObjectTracker`）**：按 IoU、中心距与独立 `frameId` 追踪多个同类物体，防止不同位置同类目标误确认；未标定相机仅输出保守距离区间，空检测绝不生成安全保证。
+   - **单调视频帧标识与必填契约（`FrameTracker` + `PerceptionPacket`）**：每帧真实新画面分配单调 `frameId`，运行时强制校验正整数 `frameId` 与递增下界，防止低帧率摄像头下同帧重复推理或乱序旧包覆盖。
+   - **统一无障碍通知分发与状态转换反馈（`AccessibleNotificationDispatcher` + `planEchoSafeTransition`）**：将消息有效性与浏览器 TTS 解耦，开启「读屏器防冲突模式」时自动静音内置 TTS 仍确保 ARIA Live 收到有效更新；视频冻结转入 `UNAVAILABLE` 时联动 `role="alert"` + 语音 + 触觉报警并即时熔断连续声场。
+   - **安全相机标定与会话绑定 Wake Lock**：支持输入实测距离与参考物真实高度标定（未完成实测误差验证前不宣称固定 ±15% 精度），切换摄像头或分辨率自动回退未标定粗估；`ScreenWakeLockController` 绑定会话代次，停止后迟到锁自动释放。
 2. **低认知负担的可控空间音频交互（`src/engine/audioScheduler.ts`）**：
-   - 无竞态三级优先级语音与空间音效协调（`EMERGENCY > USER_QUERY > AMBIENT`、`playbackId` 回调守卫、统一单调时钟）。
+   - 无竞态三级优先级语音与空间音效协调（`EMERGENCY > USER_QUERY > AMBIENT`、`playbackId` 回调守卫、统一单调时钟、读屏器防冲突模式）。
    - 提供 4 种听觉提示策略，默认「简洁语音优先」以减少环境听觉干扰；实验性单路环境异常声响提示默认关闭、按需开启。
 
 ## 双模式架构
@@ -32,7 +32,7 @@
 ## 本地开发、测试与构建
 ```bash
 npm install
-npm test        # 运行 Vitest 自动化单元测试套件（34 项用例）
+npm test        # 运行 Vitest 自动化单元测试套件（40 项用例）
 npm run dev     # 本地预览
 npm run build   # TypeScript 严格检查并生成 dist/ 静态构建产物
 ```

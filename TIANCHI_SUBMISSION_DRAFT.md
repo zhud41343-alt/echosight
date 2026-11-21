@@ -50,13 +50,13 @@
 - **03 指尖听画**：在示波器画布上自由涂鸦即可实时听见每一笔的 3D 方位与音高，支持音阶切换、撤销、PNG 导出与整幅画扫描回放。
 - **04 黑暗迷宫**：3 个递进关卡，在全黑模式下体验 8 方向射线追踪 + 3D HRTF 墙壁回声与出口和弦信标。
 - **05 原理与硬件**：呈现 Rec.709 + Sobel + TensorFlow.js + Web Audio HRTF 四阶段流水线、核心数学公式、穿戴硬件演进路线（手机挂绳+开放式骨传导耳机 → 轻量 AI 眼镜）与适用人群。
-- **06 技术验证**：提供 EchoSafe V5 故障注入对比演示（历史实现 vs EchoSafe 状态机）与分层能力证据矩阵。
+- **06 技术验证**：提供 EchoSafe V6 故障注入对比演示（历史实现 vs EchoSafe 状态机）与分层能力证据矩阵。
 
 ---
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：6 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`），**34/34 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、`canEmitContinuousSpatialAudio` 冻结即停、`SessionGuard` 失效、`SpatialObjectTracker` IoU 独立帧追踪、2.0m 参考物针孔标定、读屏器防冲突静音、Screen Wake Lock 生命周期、事件触觉振动冷却与全链路 `PerceptionPacket` 校验）。
+- **自动化单元测试（`npm test` · Vitest v5.1.1）**：7 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`、`accessibleNotifier`），**40/40 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、必填 `frameId` 运行时校验、`canEmitContinuousSpatialAudio` 冻结即停、`AccessibleNotificationDispatcher` 读屏防冲突不丢消息、`planEchoSafeTransition` 冻结失效多通道报警、会话绑定 Wake Lock 迟到自释放、实测高度标定与切换摄像头失效拒判）。
 - **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**（6 大实验台模块已按需懒加载并包裹 `ModuleErrorBoundary`）。
 - **真实浏览器多视口核验**：
   - `1440×900` 桌面与物理摄像头实测：分离统计视觉帧率、AI 推理帧率与推理/端到端 P95 延迟（单机实测推理 P95 `257ms`，端到端 P95 `1205ms`，明确标注不适用于高速动态障碍独立避障），全流程 **0 控制台报错**；

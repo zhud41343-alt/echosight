@@ -5,6 +5,7 @@ import {
   computeCameraCalibrationFromDetection,
   computeDistanceErrorStats,
   estimateMonocularDistance,
+  isCalibrationApplicable,
   REAL_HEIGHT_M,
   SpatialDetection,
   SpatialObjectTracker,
@@ -138,23 +139,65 @@ describe('Monocular distance estimation & P0-1 SpatialObjectTracker', () => {
     expect(confirmed[0].labelEn).toBe('chair');
   });
 
-  it('computes pinhole camera calibration from a 2.0m reference object and rejects clipped/invalid boxes', () => {
-    // Chair (0.85m) at 2.0m with focalLengthPx=500 -> h = 0.85 * 500 / 2.0 = 212.5px
-    const computed = computeCameraCalibrationFromDetection('chair', [200, 120, 120, 212.5], 2.0, 480);
-    expect(computed).not.toBeNull();
-    expect(computed!.calibrated).toBe(true);
-    expect(computed!.focalLengthPx).toBe(500);
+  it('P0-3 (V6): computes calibration from user-measured height/distance, refuses unvalidated ±15% claim, and rejects camera/resolution mismatch', () => {
+    // User-measured chair height 0.85m at 2.0m -> focalLengthPx = 500
+    const res = computeCameraCalibrationFromDetection({
+      labelEn: 'chair',
+      bbox: [200, 120, 120, 212.5],
+      knownDistanceMeters: 2.0,
+      knownHeightMeters: 0.85,
+      canvasW: 640,
+      canvasH: 480,
+      cameraDeviceId: 'rear-cam-1',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.calibration.focalLengthPx).toBe(500);
+    expect(res.calibration.measuredErrorValidated).toBe(false);
 
-    // Using computed calibration yields calibrated conservative interval around 2.0m
-    const est = estimateMonocularDistance('chair', [200, 120, 120, 212.5], 640, 480, computed);
+    // Without real measured error validation, MUST NOT claim a fixed ±15% interval
+    const est = estimateMonocularDistance('chair', [200, 120, 120, 212.5], 640, 480, res.calibration);
     expect(est.calibrated).toBe(true);
-    expect(est.estimatedMeters).toBeCloseTo(2.0, 1);
-    expect(est.displayText).toMatch(/约\d+(\.\d+)?–\d+(\.\d+)?米/);
+    expect(est.displayText).toContain('未实测误差');
+    expect(est.displayText).not.toMatch(/约\d+(\.\d+)?–\d+(\.\d+)?米/);
 
-    // Clipped box touching top/bottom edge is rejected for calibration
-    expect(computeCameraCalibrationFromDetection('chair', [200, 0, 120, 212], 2.0, 480)).toBeNull();
-    // Out-of-range distance or unknown class rejected
-    expect(computeCameraCalibrationFromDetection('zebra', [200, 120, 120, 212], 2.0, 480)).toBeNull();
-    expect(computeCameraCalibrationFromDetection('chair', [200, 120, 120, 212], 0.1, 480)).toBeNull();
+    // Same camera & aspect ratio -> applicable
+    expect(isCalibrationApplicable(res.calibration, 640, 480, 'rear-cam-1')).toBe(true);
+    // Switched to front camera -> NOT applicable!
+    expect(isCalibrationApplicable(res.calibration, 640, 480, 'front-cam-2')).toBe(false);
+    // Rotated portrait aspect ratio -> NOT applicable!
+    expect(isCalibrationApplicable(res.calibration, 480, 640, 'rear-cam-1')).toBe(false);
+
+    // Clipped box on any edge, extreme aspect ratio, or invalid physical height/distance rejected
+    expect(
+      computeCameraCalibrationFromDetection({
+        labelEn: 'chair',
+        bbox: [200, 0, 120, 212],
+        knownDistanceMeters: 2.0,
+        knownHeightMeters: 0.85,
+        canvasW: 640,
+        canvasH: 480,
+      }).ok
+    ).toBe(false);
+    expect(
+      computeCameraCalibrationFromDetection({
+        labelEn: 'chair',
+        bbox: [100, 120, 480, 60],
+        knownDistanceMeters: 2.0,
+        knownHeightMeters: 0.85,
+        canvasW: 640,
+        canvasH: 480,
+      }).ok
+    ).toBe(false);
+    expect(
+      computeCameraCalibrationFromDetection({
+        labelEn: 'chair',
+        bbox: [200, 120, 120, 212],
+        knownDistanceMeters: 0.1,
+        knownHeightMeters: 0.85,
+        canvasW: 640,
+        canvasH: 480,
+      }).ok
+    ).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
-# EchoSafe V5 可靠性状态机与全链路失效保护设计（ECHOSAFE_DESIGN）
+# EchoSafe V6 可靠性状态机与全链路失效保护设计（ECHOSAFE_DESIGN）
 
 ## 1. 核心设计目标
-面向视障辅助感知场景，**误报“安全”或播报过期环境状态比“暂不可用”危险得多**。EchoSafe V5 沿实际执行链（摄像头 → 新视频帧 → Canvas → TensorFlow.js → `SpatialObjectTracker` → `PerceptionPacket` → `EchoSafe` → `AudioSpeechScheduler` → HRTF / 语音）逐节点建立集中式有效性闸门与失效保护（Fail-Safe）机制。
+面向视障辅助感知场景，**误报“安全”或无声失效比“暂不可用”危险得多**。EchoSafe V6 沿实际执行链（摄像头 → 新视频帧 → Canvas → TensorFlow.js → `SpatialObjectTracker` → `PerceptionPacket` → `EchoSafe` → `AccessibleNotificationDispatcher` → ARIA Live / TTS / 触觉 / HRTF）逐节点建立集中式有效性闸门与失效保护（Fail-Safe）机制。
 
 ## 2. 六状态定义（`src/engine/echoSafe.ts`）
 - `IDLE`：未启动，`dataSource = 'UNAVAILABLE'`，`canTrustLivePerception = false`。
@@ -19,7 +19,12 @@
 5. **连续声场即时熔断（`canEmitContinuousSpatialAudio` + `spatialAudio.stopAllImmediate()`）**：Sobel 边缘计算与 3D HRTF 连续声场严格校验画面新鲜度与 EchoSafe 状态；一旦冻结、断流、切后台或切换策略，立即停止并释放所有活跃振荡器节点。
 6. **单并发锁与双指标监控（`SingleFlightRunner` + `RuntimeMetricsTracker`）**：杜绝推理队列堆积，严格分离视觉帧率（`visionFps`）与 AI 推理帧率（`aiFps`）及推理/端到端 P95 延迟。
 
-## 4. 无竞态语音与音频协调（`src/engine/audioScheduler.ts`）
+## 4. 无障碍通知分发与状态转换反馈（V6 新增：`src/engine/accessibleNotifier.ts`）
+- **消息有效性与 TTS 解耦（`AccessibleNotificationDispatcher`）**：统一处理去重、冷却与优先级，开启「读屏器防冲突模式」或浏览器不支持 TTS 时，仍将有效环境与查询更新送达 `role="status"` / `role="alert"` ARIA Live 区域，绝不因 `speechSynthesis` 未接受而丢消息。
+- **状态转换多通道协调（`planEchoSafeTransition`）**：覆盖 `IDLE / INITIALIZING / ACTIVE / DEGRADED / UNAVAILABLE` 关键跃迁；进入 `UNAVAILABLE`（如视频冻结）时联动 `aria-live="assertive"`、TTS、触觉报警与 `stopAllImmediate()`，并防止 1 秒健康检查重复播报同一故障。
+- **会话绑定 Wake Lock（`src/engine/deviceFeedback.ts`）**：`ScreenWakeLockController` 采用单调代次守卫与单并发去重，若用户在异步申请完成前点击停止，迟到返回的 `WakeLockSentinel` 将立即自释放。
+
+## 5. 无竞态语音与音频协调（`src/engine/audioScheduler.ts`）
 - **三级优先级**：`EMERGENCY (3)` > `USER_QUERY (2)` > `AMBIENT (1)`。
 - **防竞态 `playbackId` 守卫**：被抢占语音的迟到 `onend`/`onerror` 回调不会覆盖新播报状态；统一使用单调时钟。
 - **全空间音互斥与听觉减负**：默认「简洁语音优先」策略；播报 `EMERGENCY` 或 `USER_QUERY` 时自动静音连续声场、寻物信标与低频空间提示。
