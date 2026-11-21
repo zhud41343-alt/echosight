@@ -87,14 +87,14 @@ const CLAIM_ROWS: Array<{
   evidence: string;
 }> = [
   {
-    claim: 'EchoDepthNet (1.11M) 残差频域边缘深度融合模型端侧 ONNX 浏览器实时推理',
-    tier: '已实现且真实浏览器验证',
-    evidence: 'public/models/echodepth_net.onnx (4.46MB) + src/engine/echoDepthOnnx.ts（ONNX 数值误差 4.77e-07；01 声画扫描实测 51ms）',
+    claim: 'EchoDepthNet (1.11M) 残差边缘引导深度融合模型端侧 ONNX 推理与 AcousticMatrixRouter 防覆盖路由',
+    tier: '已实现且线上真实浏览器验证',
+    evidence: 'public/models/echodepth_net.onnx (SHA-256 见 MODEL_PROVENANCE.md) + src/engine/acousticRouter.ts（线上实测 44ms，数值误差 4.77e-07）',
   },
   {
-    claim: 'EchoSafe V8 严格新鲜度、FrameTracker 防重复推理、必填 frameId 契约、连续声场熔断与无障碍通知分发',
+    claim: 'EchoSafe V8.4 严格新鲜度、FrameTracker 防重复推理、必填 frameId 契约、连续声场熔断与无障碍通知分发',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + src/engine/accessibleNotifier.ts + src/engine/deviceFeedback.ts + tests/（7 文件 41/41 通过）',
+    evidence: 'src/engine/echoSafe.ts + src/engine/accessibleNotifier.ts + tests/（8 文件 44/44 + Python 管道 3/3 通过）',
   },
   {
     claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + stopAllImmediate 节点清理）',

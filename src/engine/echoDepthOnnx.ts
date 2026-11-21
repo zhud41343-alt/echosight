@@ -6,6 +6,7 @@
 
 const MODEL_INPUT_SIZE = 256;
 const MODEL_URL = './models/echodepth_net.onnx';
+export const ECHO_DEPTH_MODEL_VERSION = 'EchoDepthNet-ResidualEGDFM-1.11M';
 
 type OrtModule = typeof import('onnxruntime-web');
 type OrtSession = import('onnxruntime-web').InferenceSession;
@@ -129,14 +130,19 @@ export async function runEchoDepthInference(
 
   const inputTensor = new ortMod.Tensor('float32', chw, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
   const outputs = await session.run({ rgb_image: inputTensor });
-  const depthData = outputs.depth_map.data as Float32Array;
-  const acousticData = outputs.acoustic_matrix.data as Float32Array; // [1, 1, 16, 48]
+  const depthData = outputs.depth_map?.data as Float32Array | undefined;
+  const acousticData = outputs.acoustic_matrix?.data as Float32Array | undefined; // [1, 1, 16, 48]
+  if (!depthData || !acousticData || depthData.length !== hw || acousticData.length !== 16 * 48) {
+    return null;
+  }
 
-  // Render 256x256 Inferno heatmap
+  // Render 256x256 Inferno heatmap (strictly reject NaN / Infinity outputs)
   const heatPixels = new Uint8ClampedArray(hw * 4);
   let proxSum = 0;
   for (let i = 0; i < hw; i++) {
-    const v = Math.max(0, Math.min(1, depthData[i]));
+    const raw = depthData[i];
+    if (!Number.isFinite(raw)) return null;
+    const v = Math.max(0, Math.min(1, raw));
     proxSum += v;
     const lutIdx = Math.round(v * 255) * 3;
     heatPixels[i * 4] = INFERNO_LUT[lutIdx];
@@ -152,7 +158,9 @@ export async function runEchoDepthInference(
   const acousticMatrix: number[][] = Array.from({ length: cols }, () => new Array(rows).fill(0));
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      acousticMatrix[c][r] = Math.max(0, Math.min(1, acousticData[r * cols + c]));
+      const rawA = acousticData[r * cols + c];
+      if (!Number.isFinite(rawA)) return null;
+      acousticMatrix[c][r] = Math.max(0, Math.min(1, rawA));
     }
   }
 

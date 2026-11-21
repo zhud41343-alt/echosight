@@ -11,7 +11,7 @@
 | **P3** | **产品架构：双模式一体设计** | 左图「随身助行」极简大字屏 + 右图「专业实验台」6 大模块 | 普通视障者零噪音使用；评委与高校科普一键展开全技术链路 |
 | **P4** | **核心创新一：EchoDepthNet 端侧深度-声学双头网络** | MobileNetV3 + 可微 Sobel + **Residual FG-EDFM** 架构图 | 仅 **1.11M 参数**，单次推理同时输出近场深度图与 `16×48` 声学危险度矩阵 |
 | **P5** | **真实前后端打通：ONNX Runtime Web 浏览器实时神经深度** | 网页端「01 声画扫描」实时渲染 EchoDepthNet 深度热力图 + HRTF 声场 | 不是离线 PPT 模型，而是**真正在浏览器里跑起来的端侧 ONNX 模型** |
-| **P6** | **算法消融与多模型对比实测** | `FastDepth-Lite` vs `FPN Baseline` vs `EchoDepthNet (+Residual FG-EDFM)` 柱状表 + 四联图 | 仅 +2.8% 参数，在 AbsRel / RMSE / $\delta_1$ / Acoustic RMSE 全指标反超基线 |
+| **P6** | **算法消融与三模型诚实对比** | `FastDepth-Lite` vs `FPN Baseline` vs `EchoDepthNet (+Residual EG-DFM)` 对比表 + 四联图 | 相比 FPN 基线降低 RMSE（`0.0872→0.0824`）并提升 $\delta_1$（`0.8864→0.8970`），同时如实披露简单合成块上与 FastDepth-Lite 的对比及 NYU 真实数据集待测计划 |
 | **P7** | **核心创新二：EchoSafe V6 全链路可信状态机** | 六状态转换图 + `FrameTracker` 单调 `frameId` + `stopAllImmediate()` 熔断链路 | 杜绝低帧率同帧重复推理、杜绝冻结后残留声音、杜绝空检测虚假安全承诺 |
 | **P8** | **核心创新三：WCAG 2.2 级非视觉交互与低负担音频** | 4 种听觉策略卡片 + 读屏器防冲突模式 + Screen Wake Lock + 触觉振动 | 解决 VoiceOver/TalkBack 双重语音打架、地铁离线 PWA（Service Worker）本地运行 |
 | **P9** | **全链路自动化与浏览器实测证据** | Vitest **40/40 通过**截图 + GitHub Actions CI 绿灯 + `1440`/`390`/`360` 零溢出对比 | 7 个测试文件覆盖所有高风险失效路径，100% 开源可一键复现 |

@@ -36,9 +36,11 @@ import {
   parseVoiceCommand,
 } from '../engine/blindAssistTools';
 import {
+  ECHO_DEPTH_MODEL_VERSION,
   loadEchoDepthOnnxModel,
   runEchoDepthInference,
 } from '../engine/echoDepthOnnx';
+import { AcousticMatrixRouter, ActiveAcousticSource } from '../engine/acousticRouter';
 
 const CANVAS_W = 480;
 const CANVAS_H = 300;
@@ -125,10 +127,10 @@ export const VisionScanner: React.FC = () => {
   const [voiceFeedback, setVoiceFeedback] = useState<string>('');
   const lastFinderPingRef = useRef(0);
 
-  // Refs for real-time animation loop
-  const matrixRef = useRef<number[][]>(
-    Array.from({ length: MATRIX_COLS }, () => new Array(MATRIX_ROWS).fill(0))
-  );
+  // Refs for real-time animation loop (strictly separated Sobel vs Neural EchoDepthNet router)
+  const routerRef = useRef(new AcousticMatrixRouter(MATRIX_COLS, MATRIX_ROWS));
+  const neuralFrameIdRef = useRef<number>(0);
+  const [activeAudioSource, setActiveAudioSource] = useState<ActiveAcousticSource>('sobel');
   const edgeImageRef = useRef<ImageData | null>(null);
   const scanColRef = useRef<number>(0);
   const lastStepTimeRef = useRef<number>(0);
@@ -156,7 +158,7 @@ export const VisionScanner: React.FC = () => {
 
     const imgData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
     const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
-    matrixRef.current = res.matrix;
+    routerRef.current.updateSobel(res.matrix);
     edgeImageRef.current = res.edgeImageData;
     setMetrics(res.metrics);
   }, [cameraActive, preset, edgeThreshold]);
@@ -181,7 +183,7 @@ export const VisionScanner: React.FC = () => {
     let rafId = 0;
 
     const renderLoop = (timestamp: number) => {
-      // If camera is live, continuously refresh frame
+      // If camera is live, continuously refresh Sobel slot ONLY (never overwrites neural slot!)
       if (cameraActive && videoRef.current && videoRef.current.readyState >= 2) {
         const srcCanvas = sourceCanvasRef.current;
         const sCtx = srcCanvas?.getContext('2d', { willReadFrequently: true });
@@ -189,7 +191,7 @@ export const VisionScanner: React.FC = () => {
           drawMediaContain(sCtx, videoRef.current, CANVAS_W, CANVAS_H);
           const imgData = sCtx.getImageData(0, 0, CANVAS_W, CANVAS_H);
           const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
-          matrixRef.current = res.matrix;
+          routerRef.current.updateSobel(res.matrix);
           edgeImageRef.current = res.edgeImageData;
           if (Math.floor(timestamp / 250) !== Math.floor(lastStepTimeRef.current / 250)) {
             setMetrics(res.metrics);
@@ -197,23 +199,28 @@ export const VisionScanner: React.FC = () => {
         }
       }
 
-      // Advance acoustic scanline when active
+      const pageHidden = typeof document !== 'undefined' ? document.hidden : false;
+      const activeFeed = routerRef.current.resolveActive(viewMode, timestamp, pageHidden);
+
+      // Advance acoustic scanline ONLY when active acoustic source is valid & non-expired
       if (isScanning && timestamp - lastStepTimeRef.current >= scanSpeedMs) {
         lastStepTimeRef.current = timestamp;
-        const col = scanColRef.current;
-        const normX = col / (MATRIX_COLS - 1);
-        const telemetry = spatialAudio.playScanColumn(matrixRef.current[col], normX, scanSpeedMs / 1000, {
-          scaleMode,
-          useHRTF,
-          volume,
-        });
-        if (col % 2 === 0) {
-          setScanTelemetry({
-            azimuthDeg: telemetry.azimuthDeg,
-            freqHz: telemetry.dominantFreqHz,
+        if (activeFeed.matrix) {
+          const col = scanColRef.current;
+          const normX = col / (MATRIX_COLS - 1);
+          const telemetry = spatialAudio.playScanColumn(activeFeed.matrix[col], normX, scanSpeedMs / 1000, {
+            scaleMode,
+            useHRTF,
+            volume,
           });
+          if (col % 2 === 0) {
+            setScanTelemetry({
+              azimuthDeg: telemetry.azimuthDeg,
+              freqHz: telemetry.dominantFreqHz,
+            });
+          }
+          scanColRef.current = (col + 1) % MATRIX_COLS;
         }
-        scanColRef.current = (col + 1) % MATRIX_COLS;
       }
 
       // Draw display canvas
@@ -230,11 +237,12 @@ export const VisionScanner: React.FC = () => {
           // Acoustic matrix view (warm phosphor/amber instrument grid)
           dCtx.fillStyle = '#161512';
           dCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+          const gridMat = activeFeed.matrix;
           const cw = CANVAS_W / MATRIX_COLS;
           const ch = CANVAS_H / MATRIX_ROWS;
           for (let c = 0; c < MATRIX_COLS; c++) {
             for (let r = 0; r < MATRIX_ROWS; r++) {
-              const v = matrixRef.current[c][r];
+              const v = gridMat ? gridMat[c][r] : 0;
               if (v > 0.08) {
                 dCtx.fillStyle = `rgba(255, 138, 61, ${Math.min(1, v * 1.15)})`;
                 dCtx.fillRect(c * cw + 1, r * ch + 1, cw - 2, ch - 2);
@@ -354,28 +362,61 @@ export const VisionScanner: React.FC = () => {
 
   // Run EchoDepthNet ONNX real-time neural depth & 48x16 acoustic hazard matrix when 'depth' view is active
   useEffect(() => {
-    if (viewMode !== 'depth') return;
+    const myGen = routerRef.current.beginGeneration();
+    neuralFrameIdRef.current = 0;
+
+    if (viewMode !== 'depth') {
+      setActiveAudioSource('sobel');
+      setDepthMs(null);
+      return;
+    }
+    setActiveAudioSource('none');
     let cancelled = false;
 
     const runOnce = async () => {
       if (cancelled || depthBusyRef.current) return;
+      if (typeof document !== 'undefined' && document.hidden) {
+        routerRef.current.invalidateNeural();
+        setActiveAudioSource('none');
+        return;
+      }
       const src = sourceCanvasRef.current;
       if (!src) return;
       depthBusyRef.current = true;
+      const startedAt = performance.now();
+      const myFrameId = ++neuralFrameIdRef.current;
       try {
         const out = await runEchoDepthInference(src);
-        if (!cancelled && out) {
-          if (!depthHeatmapCanvasRef.current) {
-            const hc = document.createElement('canvas');
-            hc.width = 256;
-            hc.height = 256;
-            depthHeatmapCanvasRef.current = hc;
-          }
-          const hCtx = depthHeatmapCanvasRef.current.getContext('2d');
-          hCtx?.putImageData(out.depthHeatmap, 0, 0);
-          matrixRef.current = out.acousticMatrix;
-          setDepthMs(out.inferenceMs);
+        const completedAt = performance.now();
+        if (cancelled) return;
+        if (!out) {
+          routerRef.current.invalidateNeural();
+          setActiveAudioSource('none');
+          return;
         }
+        const committed = routerRef.current.commitNeuralPacket({
+          matrix: out.acousticMatrix,
+          inputSource,
+          frameId: myFrameId,
+          generation: myGen,
+          startedAt,
+          completedAt,
+          // Live camera neural packets expire after 3000ms (freeze protection); static preset/upload valid until input changes
+          expiresAt: cameraActive ? completedAt + 3000 : Number.POSITIVE_INFINITY,
+          modelVersion: ECHO_DEPTH_MODEL_VERSION,
+        });
+        if (!committed.accepted) return;
+
+        if (!depthHeatmapCanvasRef.current) {
+          const hc = document.createElement('canvas');
+          hc.width = 256;
+          hc.height = 256;
+          depthHeatmapCanvasRef.current = hc;
+        }
+        const hCtx = depthHeatmapCanvasRef.current.getContext('2d');
+        hCtx?.putImageData(out.depthHeatmap, 0, 0);
+        setDepthMs(out.inferenceMs);
+        setActiveAudioSource('neural_echodepth');
       } finally {
         depthBusyRef.current = false;
       }
@@ -385,7 +426,20 @@ export const VisionScanner: React.FC = () => {
       if (!cancelled) setDepthStatus(msg);
     }).then((ok) => {
       if (ok && !cancelled) void runOnce();
+      else if (!ok && !cancelled) {
+        routerRef.current.invalidateNeural();
+        setActiveAudioSource('none');
+      }
     });
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        routerRef.current.invalidateNeural();
+        spatialAudio.stopAllImmediate();
+        setActiveAudioSource('none');
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     const timer = window.setInterval(() => {
       if (cameraActive) void runOnce();
@@ -393,9 +447,10 @@ export const VisionScanner: React.FC = () => {
 
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisibility);
       window.clearInterval(timer);
     };
-  }, [viewMode, preset, uploadVersion, cameraActive]);
+  }, [viewMode, inputSource, preset, uploadVersion, cameraActive]);
 
   // Run On-Device AI detection when enabled
   useEffect(() => {
@@ -614,7 +669,8 @@ export const VisionScanner: React.FC = () => {
     const normY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     const col = Math.min(MATRIX_COLS - 1, Math.floor(normX * MATRIX_COLS));
     const row = Math.min(MATRIX_ROWS - 1, Math.floor(normY * MATRIX_ROWS));
-    const energyPct = Math.round((matrixRef.current[col]?.[row] ?? 0) * 100);
+    const activeMat = routerRef.current.resolveActive(viewMode, performance.now(), false).matrix;
+    const energyPct = Math.round((activeMat?.[col]?.[row] ?? 0) * 100);
 
     probePointRef.current = { x: normX * CANVAS_W, y: normY * CANVAS_H, at: performance.now() };
 
@@ -849,10 +905,13 @@ export const VisionScanner: React.FC = () => {
               )}
               {viewMode === 'depth' && (
                 <span className="screen-label text-amber">
-                  {depthMs !== null
-                    ? `EchoDepthNet ONNX · ${depthMs}ms`
-                    : depthStatus || 'EchoDepthNet 加载中…'}
+                  {activeAudioSource === 'neural_echodepth' && depthMs !== null
+                    ? `声场源：EchoDepthNet ONNX · ${depthMs}ms`
+                    : depthStatus || 'EchoDepthNet 神经声场加载中…'}
                 </span>
+              )}
+              {viewMode !== 'depth' && (
+                <span className="screen-label">声场源：Sobel 边缘矩阵</span>
               )}
             </div>
 
