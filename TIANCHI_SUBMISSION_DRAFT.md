@@ -22,7 +22,7 @@
 
 ## 二、核心工程创新
 
-### 创新一：EchoSafe V5 可靠性状态机与全链路失效保护（Fail-Safe）
+### 创新一：EchoSafe 全链路可靠性状态机与失效保护（Fail-Safe）
 传统视觉转语音原型只关注“检测到了什么”，EchoSafe（`src/engine/echoSafe.ts`）沿实际执行链逐节点严格校验“**结果是否可信、何时必须停止输出**”：
 - **六状态精细管理**：`IDLE` / `INITIALIZING` / `ACTIVE` / `DEGRADED` / `UNAVAILABLE` / `DEMO`，彻底隔离真实摄像头数据（`REAL_CAMERA`）与模拟演示数据（`SIMULATED_SCENE`）。
 - **单调视频帧身份（`FrameTracker`）**：优先基于 `requestVideoFrameCallback`（回退检测 `video.currentTime` 真实推进），为每一帧真实新画面分配单调递增 `frameId`，防止低帧率摄像头下 AI 对同一帧重复推理并伪造两帧连续确认。
@@ -50,13 +50,14 @@
 - **03 指尖听画**：在示波器画布上自由涂鸦即可实时听见每一笔的 3D 方位与音高，支持音阶切换、撤销、PNG 导出与整幅画扫描回放。
 - **04 黑暗迷宫**：3 个递进关卡，在全黑模式下体验 8 方向射线追踪 + 3D HRTF 墙壁回声与出口和弦信标。
 - **05 原理与硬件**：呈现 Rec.709 + Sobel + TensorFlow.js + Web Audio HRTF 四阶段流水线、核心数学公式、穿戴硬件演进路线（手机挂绳+开放式骨传导耳机 → 轻量 AI 眼镜）与适用人群。
-- **06 技术验证**：提供 EchoSafe V6 故障注入对比演示（历史实现 vs EchoSafe 状态机）与分层能力证据矩阵。
+- **06 技术验证**：提供 EchoSafe 故障注入对比演示（历史实现 vs EchoSafe 状态机）、分层能力证据矩阵与默认空白的线下卷尺 MAE/P90 实测计算器。
 
 ---
 
 ## 四、可复现的工程验证与诚实边界
 
-- **自动化单元测试（`npm test` · Vitest v5.1.1）**：7 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`、`accessibleNotifier`），**40/40 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、必填 `frameId` 运行时校验、`canEmitContinuousSpatialAudio` 冻结即停、`AccessibleNotificationDispatcher` 读屏防冲突不丢消息、`planEchoSafeTransition` 冻结失效多通道报警、会话绑定 Wake Lock 迟到自释放、实测高度标定与切换摄像头失效拒判）。
+- **自动化单元测试（`npm test` · Vitest v5.1.1）**：7 个测试文件（`echoSafe`、`safetyWording`、`audioScheduler`、`distance`、`acousticAndTraffic`、`deviceFeedback`、`accessibleNotifier`），**41/41 项用例全部通过**（覆盖空时间戳、画面冻结、`FrameTracker` 防同帧重复推理、必填 `frameId` 运行时校验、`canEmitContinuousSpatialAudio` 冻结即停、`AccessibleNotificationDispatcher` 读屏防冲突不丢消息、`planEchoSafeTransition` 冻结失效多通道报警、会话绑定 Wake Lock 迟到自释放、实测高度标定与切换摄像头失效拒判、EMA 框体平滑与自然精简话术）。
+- **前后端自研模型打通实测**：自研 1.11M `EchoDepthNet (+Residual FG-EDFM)` 导出至 `public/models/echodepth_net.onnx`（ONNX Runtime 数值对齐误差 `4.77e-07`），在「01 声画扫描 → 神经深度」经 `onnxruntime-web` WASM 实测 **51ms** 实时推理并渲染 Inferno 深度热力图与 16×48 声学矩阵。
 - **生产构建（`npm run build`）**：TypeScript 严格类型检查 + Vite 构建 **0 报错**（6 大实验台模块已按需懒加载并包裹 `ModuleErrorBoundary`）。
 - **真实浏览器多视口核验**：
   - `1440×900` 桌面与物理摄像头实测：分离统计视觉帧率、AI 推理帧率与推理/端到端 P95 延迟（单机实测推理 P95 `257ms`，端到端 P95 `1205ms`，明确标注不适用于高速动态障碍独立避障），全流程 **0 控制台报错**；
