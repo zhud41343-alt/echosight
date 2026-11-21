@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Contrast, Play, Volume2 } from 'lucide-react';
 import { BlindCompanionView } from './components/BlindCompanionView';
 import { spatialAudio } from './engine/spatialAudio';
+import { audioScheduler } from './engine/audioScheduler';
 
 const VisionScanner = lazy(() =>
   import('./components/VisionScanner').then((m) => ({ default: m.VisionScanner }))
@@ -106,8 +107,18 @@ export function App() {
   useEffect(() => {
     return () => {
       stopDemoRef.current?.();
+      spatialAudio.stopAllImmediate();
+      audioScheduler.clearAll();
     };
   }, []);
+
+  // Guarantee zero residual spatial audio or speech when switching views or studio tabs
+  useEffect(() => {
+    stopDemoRef.current?.();
+    setDemoProgress(null);
+    spatialAudio.stopAllImmediate();
+    audioScheduler.clearAll();
+  }, [appView, activeTab]);
 
   const handlePlayDiagonalDemo = () => {
     stopDemoRef.current?.();
