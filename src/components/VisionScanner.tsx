@@ -136,6 +136,7 @@ export const VisionScanner: React.FC = () => {
   // Refs for real-time animation loop (strictly separated Sobel vs Neural EchoDepthNet router)
   const routerRef = useRef(new AcousticMatrixRouter(MATRIX_COLS, MATRIX_ROWS));
   const cameraFrameTrackerRef = useRef(new FrameTracker());
+  const lastSobelCameraFrameIdRef = useRef<number>(0);
   const vfcHandleRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
   const cameraSessionRef = useRef<number>(0);
@@ -167,7 +168,13 @@ export const VisionScanner: React.FC = () => {
 
     const imgData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
     const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
-    routerRef.current.updateSobel(res.matrix);
+    if (!cameraActive) {
+      routerRef.current.updateSobel(res.matrix, {
+        inputSource: uploadedImgRef.current ? 'upload' : 'preset',
+        frameId: 0,
+        capturedAt: performance.now(),
+      });
+    }
     edgeImageRef.current = res.edgeImageData;
     setMetrics(res.metrics);
   }, [cameraActive, preset, edgeThreshold]);
@@ -189,7 +196,9 @@ export const VisionScanner: React.FC = () => {
     }
     vfcHandleRef.current = null;
     lastVideoTimeRef.current = -1;
+    lastSobelCameraFrameIdRef.current = 0;
     cameraFrameTrackerRef.current.reset();
+    routerRef.current.invalidateSobel();
   }, []);
 
   const attachCameraFrameWatcher = useCallback((myCamSession: number) => {
@@ -223,23 +232,34 @@ export const VisionScanner: React.FC = () => {
     let rafId = 0;
 
     const renderLoop = (timestamp: number) => {
-      // If camera is live, record real frame advance (fallback when rVFC unsupported) & update Sobel slot ONLY
+      // P0 (V8.6): On live camera, ONLY update Sobel when a genuinely NEW video frame arrived (never redraw frozen frames!)
       if (cameraActive && videoRef.current && videoRef.current.readyState >= 2) {
         const vid = videoRef.current as VideoWithVfc;
         if (typeof vid.requestVideoFrameCallback !== 'function' && vid.currentTime !== lastVideoTimeRef.current) {
           lastVideoTimeRef.current = vid.currentTime;
           cameraFrameTrackerRef.current.recordNewFrame(timestamp);
         }
-        const srcCanvas = sourceCanvasRef.current;
-        const sCtx = srcCanvas?.getContext('2d', { willReadFrequently: true });
-        if (srcCanvas && sCtx) {
-          drawMediaContain(sCtx, videoRef.current, CANVAS_W, CANVAS_H);
-          const imgData = sCtx.getImageData(0, 0, CANVAS_W, CANVAS_H);
-          const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
-          routerRef.current.updateSobel(res.matrix);
-          edgeImageRef.current = res.edgeImageData;
-          if (Math.floor(timestamp / 250) !== Math.floor(lastStepTimeRef.current / 250)) {
-            setMetrics(res.metrics);
+        const frameSnap = cameraFrameTrackerRef.current.getSnapshot();
+        if (
+          frameSnap.latestFrameId > lastSobelCameraFrameIdRef.current &&
+          frameSnap.latestFrameCapturedAt !== null
+        ) {
+          lastSobelCameraFrameIdRef.current = frameSnap.latestFrameId;
+          const srcCanvas = sourceCanvasRef.current;
+          const sCtx = srcCanvas?.getContext('2d', { willReadFrequently: true });
+          if (srcCanvas && sCtx) {
+            drawMediaContain(sCtx, videoRef.current, CANVAS_W, CANVAS_H);
+            const imgData = sCtx.getImageData(0, 0, CANVAS_W, CANVAS_H);
+            const res = processFrameToAcousticMatrix(imgData, MATRIX_COLS, MATRIX_ROWS, edgeThreshold);
+            routerRef.current.updateSobel(res.matrix, {
+              inputSource: 'camera',
+              frameId: frameSnap.latestFrameId,
+              capturedAt: frameSnap.latestFrameCapturedAt,
+            });
+            edgeImageRef.current = res.edgeImageData;
+            if (Math.floor(timestamp / 250) !== Math.floor(lastStepTimeRef.current / 250)) {
+              setMetrics(res.metrics);
+            }
           }
         }
       }
@@ -247,7 +267,7 @@ export const VisionScanner: React.FC = () => {
       const pageHidden = typeof document !== 'undefined' ? document.hidden : false;
       const activeFeed = routerRef.current.resolveActive(viewMode, timestamp, pageHidden);
 
-      // Advance acoustic scanline ONLY when active acoustic source is valid & non-expired
+      // Advance acoustic scanline ONLY when active acoustic source (Sobel OR Neural) is valid & non-expired
       if (isScanning && timestamp - lastStepTimeRef.current >= scanSpeedMs) {
         lastStepTimeRef.current = timestamp;
         if (activeFeed.matrix) {
@@ -265,8 +285,8 @@ export const VisionScanner: React.FC = () => {
             });
           }
           scanColRef.current = (col + 1) % MATRIX_COLS;
-        } else if (viewMode === 'depth') {
-          // P0-1 (V8.5): Stop lingering spatial audio immediately when neural feed expires/freezes
+        } else if (cameraActive || viewMode === 'depth') {
+          // P0 (V8.6): Stop lingering spatial audio immediately on ANY frozen/expired live camera feed!
           spatialAudio.stopAllImmediate();
           setActiveAudioSource('none');
         }

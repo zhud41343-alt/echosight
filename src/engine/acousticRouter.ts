@@ -24,6 +24,15 @@ export interface NeuralAcousticPacket {
   modelVersion: string;
 }
 
+export interface SobelAcousticPacket {
+  matrix: number[][];
+  inputSource: ScannerInputSource;
+  /** Real video frame ID from FrameTracker (or 0 for static preset/upload) */
+  frameId: number;
+  /** Browser frame receipt timestamp from rVFC / currentTime advance */
+  capturedAt: number;
+}
+
 export interface ResolvedAcousticFeed {
   source: ActiveAcousticSource;
   matrix: number[][] | null;
@@ -33,7 +42,8 @@ export interface ResolvedAcousticFeed {
     | 'neural_expired'
     | 'neural_frame_stale'
     | 'neural_invalid'
-    | 'sobel_not_ready';
+    | 'sobel_not_ready'
+    | 'sobel_frame_stale';
 }
 
 export function validateAcousticMatrix(
@@ -54,7 +64,7 @@ export function validateAcousticMatrix(
 }
 
 export class AcousticMatrixRouter {
-  private sobelMatrix: number[][] | null = null;
+  private sobelPacket: SobelAcousticPacket | null = null;
   private neuralPacket: NeuralAcousticPacket | null = null;
   private generation = 0;
   private lastAcceptedNeuralFrameId = 0;
@@ -81,10 +91,38 @@ export class AcousticMatrixRouter {
     return this.generation;
   }
 
-  public updateSobel(matrix: number[][]): boolean {
+  public updateSobel(
+    matrix: number[][],
+    meta: { inputSource: ScannerInputSource; frameId: number; capturedAt: number } = {
+      inputSource: 'preset',
+      frameId: 0,
+      capturedAt: 0,
+    }
+  ): boolean {
     if (!validateAcousticMatrix(matrix, this.cols, this.rows)) return false;
-    this.sobelMatrix = matrix;
+    if (meta.inputSource === 'camera') {
+      if (!Number.isInteger(meta.frameId) || meta.frameId <= 0 || !Number.isFinite(meta.capturedAt)) {
+        return false;
+      }
+      // Do not allow an older camera frame to overwrite a newer Sobel packet
+      if (
+        this.sobelPacket?.inputSource === 'camera' &&
+        meta.frameId < this.sobelPacket.frameId
+      ) {
+        return false;
+      }
+    }
+    this.sobelPacket = {
+      matrix,
+      inputSource: meta.inputSource,
+      frameId: meta.frameId,
+      capturedAt: meta.capturedAt,
+    };
     return true;
+  }
+
+  public invalidateSobel(): void {
+    this.sobelPacket = null;
   }
 
   public invalidateNeural(): void {
@@ -162,9 +200,16 @@ export class AcousticMatrixRouter {
       return { source: 'neural_echodepth', matrix: this.neuralPacket.matrix };
     }
 
-    if (!this.sobelMatrix) {
+    if (!this.sobelPacket) {
       return { source: 'none', matrix: null, reason: 'sobel_not_ready' };
     }
-    return { source: 'sobel', matrix: this.sobelMatrix };
+    // P0 (V8.6): Enforce strict frame freshness on live camera Sobel audio too (never play frozen camera frames!)
+    if (
+      this.sobelPacket.inputSource === 'camera' &&
+      (this.sobelPacket.capturedAt > now + 50 || now - this.sobelPacket.capturedAt > maxRawFrameAgeMs)
+    ) {
+      return { source: 'none', matrix: null, reason: 'sobel_frame_stale' };
+    }
+    return { source: 'sobel', matrix: this.sobelPacket.matrix };
   }
 }

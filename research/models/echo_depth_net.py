@@ -30,9 +30,9 @@ class DifferentiableSobelPrior(nn.Module):
 
 class FrequencyEdgeFusionBlock(nn.Module):
     """
-    FG-EDFM (Residual): Frequency-Guided Edge-Depth Fusion Module with Residual Skip Connection.
+    Residual EG-DFM: Residual Edge-Guided Depth Fusion Module.
     Preserves low-frequency global depth semantics via an identity/1x1 shortcut while adding
-    gated high-frequency Sobel edge refinement to sharpen obstacle boundaries without gradient decay.
+    gated spatial Sobel edge refinement to sharpen obstacle boundaries without gradient decay.
     """
 
     def __init__(self, in_ch: int, out_ch: int):
@@ -170,7 +170,7 @@ class FastDepthLite(nn.Module):
     """
     Comparison Baseline (FastDepth-style Lightweight UNet):
     MobileNetV3-Small encoder with simple progressive bilinear upsampling + 3x3 depthwise-separable
-    decoder blocks (no FPN lateral fusion and no Residual FG-EDFM).
+    decoder blocks (no FPN lateral fusion and no Residual EG-DFM).
     """
 
     def __init__(self, pretrained_backbone: bool = False):

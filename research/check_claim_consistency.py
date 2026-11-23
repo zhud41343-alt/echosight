@@ -24,6 +24,9 @@ FORMAL_FILES = [
     REPO_ROOT / "research" / "PATENT_DISCLOSURE_CN.md",
     REPO_ROOT / "research" / "outputs" / "ablation_report.md",
     REPO_ROOT / "research" / "outputs" / "MODEL_PROVENANCE.md",
+    REPO_ROOT / "research" / "train.py",
+    REPO_ROOT / "research" / "evaluate_ablation.py",
+    REPO_ROOT / "research" / "models" / "echo_depth_net.py",
 ]
 
 FORBIDDEN_PATTERNS = [

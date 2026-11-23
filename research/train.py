@@ -3,7 +3,7 @@ EchoDepthNet Training & Evaluation Pipeline (RTX 4060 FP16 Ready)
 Supports:
   1) Real paired RGB-Depth datasets (NYU Depth V2 / SUN RGB-D): --data-dir path/to/dataset
   2) Built-in Synthetic 3D Obstacle Benchmark for instant verification: --synthetic
-  3) Ablation Study toggle: --ablation-no-edge (disables FG-EDFM to compare against Baseline)
+  3) Ablation Study toggle: --ablation-no-edge (disables Residual EG-DFM to compare against Baseline)
 """
 
 import argparse
@@ -152,7 +152,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1.5e-3)
     parser.add_argument("--pretrained", action="store_true", help="Use ImageNet pretrained MobileNetV3 weights")
     parser.add_argument("--model", type=str, default="echodepth", choices=["echodepth", "fastdepth"], help="Model architecture")
-    parser.add_argument("--ablation-no-edge", action="store_true", help="Disable FG-EDFM for ablation study")
+    parser.add_argument("--ablation-no-edge", action="store_true", help="Disable Residual EG-DFM for ablation study")
     parser.add_argument("--out-dir", type=str, default="outputs")
     args = parser.parse_args()
 
@@ -162,7 +162,7 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[EchoDepthNet] Device: {device} | Seed: {args.seed} | Edge Fusion (Residual FG-EDFM): {not args.ablation_no_edge}")
+    print(f"[EchoDepthNet] Device: {device} | Seed: {args.seed} | Edge Fusion (Residual EG-DFM): {not args.ablation_no_edge}")
 
     if args.nyu_mat:
         from datasets.nyu_depth_v2 import NYUDepthV2MatDataset

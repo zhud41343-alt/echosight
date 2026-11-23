@@ -31,6 +31,10 @@ jobs:
         run: npm test
       - name: Run claim consistency audit
         run: python3 research/check_claim_consistency.py
+      - name: Run Python ONNX & checkpoint pipeline integrity tests
+        run: |
+          python3 -m pip install -q onnxruntime numpy
+          python3 research/tests/test_pipeline_integrity.py
       - name: Build
         run: npm run build
       - name: Setup Pages

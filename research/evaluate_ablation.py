@@ -1,6 +1,6 @@
 """
 Paper Evaluation & Publication Figure Generator:
-Compares Full EchoDepthNet (with FG-EDFM) vs. Ablation Baseline (--ablation-no-edge),
+Compares Full EchoDepthNet (with Residual EG-DFM) vs. Ablation Baseline (--ablation-no-edge),
 benchmarks inference FPS, writes outputs/ablation_report.md, and renders
 outputs/paper_figure_preview.png (RGB | GT Depth | Pred Depth | 16x48 Acoustic Matrix).
 """

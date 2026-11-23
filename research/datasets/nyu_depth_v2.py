@@ -66,11 +66,19 @@ class NYUDepthV2MatDataset(Dataset):
         with h5py.File(self.mat_path, "r") as f:
             total = f["images"].shape[0]
 
-        if splits_mat_path and Path(splits_mat_path).exists():
+        if splits_mat_path:
+            sp_path = Path(splits_mat_path)
+            if not sp_path.exists():
+                raise FileNotFoundError(
+                    f"Explicitly requested official splits.mat not found: '{sp_path}'. "
+                    "Refusing to silently fall back to non-official sequential split."
+                )
             import scipy.io as sio
-            sp = sio.loadmat(splits_mat_path)
+            sp = sio.loadmat(sp_path)
             train_idx = [int(i) - 1 for i in sp["trainNdxs"].reshape(-1)]
             test_idx = [int(i) - 1 for i in sp["testNdxs"].reshape(-1)]
+            if len(train_idx) != len(set(train_idx)) or len(test_idx) != len(set(test_idx)):
+                raise ValueError("Official splits.mat contains duplicate indices within a split!")
             if set(train_idx) & set(test_idx):
                 raise ValueError("Official splits.mat contains overlapping train/test indices!")
             chosen = train_idx if split == "train" else test_idx

@@ -48,9 +48,18 @@ describe('P0-1 & P0-2 (V8.5): End-to-End Video Frame -> ONNX -> AcousticMatrixRo
       return true;
     };
 
-    // Helper simulating one VisionScanner rAF HRTF scan tick
+    // Helper simulating one VisionScanner rAF HRTF scan tick (only updates Sobel on genuinely NEW camera frames)
+    let lastSobelFrameId = 0;
     const runHrtfTick = (now: number, sobelVal: number) => {
-      router.updateSobel(makeMatrix(sobelVal));
+      const fSnap = frameTracker.getSnapshot();
+      if (fSnap.latestFrameId > lastSobelFrameId && fSnap.latestFrameCapturedAt !== null) {
+        lastSobelFrameId = fSnap.latestFrameId;
+        router.updateSobel(makeMatrix(sobelVal), {
+          inputSource: 'camera',
+          frameId: fSnap.latestFrameId,
+          capturedAt: fSnap.latestFrameCapturedAt,
+        });
+      }
       const feed = router.resolveActive(viewMode, now, false);
       if (feed.matrix) {
         spatialAudio.playScanColumn(feed.matrix[0], 0.5, 0.055, {
@@ -58,7 +67,7 @@ describe('P0-1 & P0-2 (V8.5): End-to-End Video Frame -> ONNX -> AcousticMatrixRo
           useHRTF: true,
           volume: 0.7,
         });
-      } else if (viewMode === 'depth') {
+      } else {
         spatialAudio.stopAllImmediate();
       }
     };
@@ -66,7 +75,7 @@ describe('P0-1 & P0-2 (V8.5): End-to-End Video Frame -> ONNX -> AcousticMatrixRo
     // t=1000ms: Camera delivers Frame 1 (1fps)
     frameTracker.recordNewFrame(1000);
     expect(runOnnxTick(1050, 0.85)).toBe(true);
-    // High-frequency Sobel updates (0.12, 0.18) MUST NOT overwrite Neural Matrix (0.85)!
+    // High-frequency Sobel updates (0.12) MUST NOT overwrite Neural Matrix (0.85)!
     runHrtfTick(1200, 0.12);
     expect(playSpy).toHaveBeenLastCalledWith(
       expect.arrayContaining([0.85]),
@@ -88,9 +97,17 @@ describe('P0-1 & P0-2 (V8.5): End-to-End Video Frame -> ONNX -> AcousticMatrixRo
     expect(playSpy.mock.calls.length).toBe(playCallsBeforeFreeze);
     expect(stopSpy).toHaveBeenCalled();
 
-    // Switching to 'sobel' mode routes Sobel Matrix A (0.25) to HRTF immediately
+    // P0 (V8.6): Switching to default 'sobel' mode while camera is STILL FROZEN MUST ALSO STAY SILENT!
     viewMode = 'sobel';
+    const stopCallsBeforeSobelFreeze = stopSpy.mock.calls.length;
     runHrtfTick(4300, 0.25);
+    expect(playSpy.mock.calls.length).toBe(playCallsBeforeFreeze);
+    expect(stopSpy.mock.calls.length).toBeGreaterThan(stopCallsBeforeSobelFreeze);
+    expect(router.resolveActive('sobel', 4300, false).reason).toBe('sobel_frame_stale');
+
+    // Camera RECOVERS at t=5000ms with genuine new Frame 2 -> Sobel plays fresh Frame 2, then Depth plays fresh Neural Matrix (0.92)
+    frameTracker.recordNewFrame(5000);
+    runHrtfTick(5020, 0.25);
     expect(playSpy).toHaveBeenLastCalledWith(
       expect.arrayContaining([0.25]),
       0.5,
@@ -98,9 +115,7 @@ describe('P0-1 & P0-2 (V8.5): End-to-End Video Frame -> ONNX -> AcousticMatrixRo
       expect.any(Object)
     );
 
-    // Camera RECOVERS at t=5000ms with genuine new Frame 2 -> back to 'depth' mode -> HRTF receives fresh Neural Matrix (0.92)
     viewMode = 'depth';
-    frameTracker.recordNewFrame(5000);
     expect(runOnnxTick(5050, 0.92)).toBe(true);
     expect(onnxRuns).toBe(2);
     runHrtfTick(5150, 0.11);
