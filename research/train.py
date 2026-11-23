@@ -143,6 +143,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="", help="Path to paired rgb/ and depth/ folder")
     parser.add_argument("--nyu-hf", action="store_true", help="Auto-download/load NYU Depth V2 via HuggingFace datasets")
     parser.add_argument("--nyu-mat", type=str, default="", help="Path to official nyu_depth_v2_labeled.mat (HDF5)")
+    parser.add_argument("--nyu-splits", type=str, default="", help="Path to official Nathan Silberman splits.mat (trainNdxs/testNdxs)")
     parser.add_argument("--synthetic", action="store_true", help="Use built-in synthetic 3D obstacle dataset")
     parser.add_argument("--seed", type=int, default=42, help="Deterministic random seed for fair ablation")
     parser.add_argument("--epochs", type=int, default=15)
@@ -165,8 +166,10 @@ def main():
 
     if args.nyu_mat:
         from datasets.nyu_depth_v2 import NYUDepthV2MatDataset
-        train_ds = NYUDepthV2MatDataset(args.nyu_mat, split="train", img_size=args.img_size)
-        val_ds = NYUDepthV2MatDataset(args.nyu_mat, split="val", img_size=args.img_size)
+        splits_arg = args.nyu_splits if args.nyu_splits else None
+        train_ds = NYUDepthV2MatDataset(args.nyu_mat, split="train", img_size=args.img_size, splits_mat_path=splits_arg)
+        val_ds = NYUDepthV2MatDataset(args.nyu_mat, split="val", img_size=args.img_size, splits_mat_path=splits_arg)
+        print(f"[NYU Depth V2] Split mode: {train_ds.split_mode} (train={len(train_ds)}, val={len(val_ds)})")
     elif args.nyu_hf:
         from datasets.nyu_depth_v2 import NYUDepthV2HFDataset
         train_ds = NYUDepthV2HFDataset(split="train", img_size=args.img_size)

@@ -69,9 +69,14 @@ class NYUDepthV2MatDataset(Dataset):
         if splits_mat_path and Path(splits_mat_path).exists():
             import scipy.io as sio
             sp = sio.loadmat(splits_mat_path)
-            key = "trainNdxs" if split == "train" else "testNdxs"
-            # Official splits.mat uses 1-based MATLAB indices
-            self.indices = [int(i) - 1 for i in sp[key].reshape(-1)]
+            train_idx = [int(i) - 1 for i in sp["trainNdxs"].reshape(-1)]
+            test_idx = [int(i) - 1 for i in sp["testNdxs"].reshape(-1)]
+            if set(train_idx) & set(test_idx):
+                raise ValueError("Official splits.mat contains overlapping train/test indices!")
+            chosen = train_idx if split == "train" else test_idx
+            if any(i < 0 or i >= total for i in chosen):
+                raise IndexError(f"splits.mat index out of bounds for dataset size {total}")
+            self.indices = chosen
             self.split_mode = "official_splits_mat"
         else:
             n_train = min(795, int(total * 0.55)) if total == 1449 else int(total * 0.85)

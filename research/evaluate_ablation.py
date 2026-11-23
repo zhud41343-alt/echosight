@@ -88,15 +88,15 @@ def main():
     base_res = benchmark_model(out_dir / "echodepth_no_edge.pt", model_kind="no_edge", device=device)
     full_res = benchmark_model(out_dir / "echodepth_best.pt", model_kind="full", device=device)
 
-    report = f"""# EchoDepthNet 三模型对比与消融实验自动评测报告（Pretrained + Residual FG-EDFM）
+    report = f"""# EchoDepthNet 三模型对比与消融实验自动评测报告（Pretrained + Residual EG-DFM）
 
-运行设备：`{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}`
+运行设备：`{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}`（验证集 64 场景，seed=999）
 
 | 模型版本 | 参数量 (M) ↓ | AbsRel ↓ | RMSE ↓ | δ₁ (<1.25) ↑ | Acoustic RMSE ↓ | 推理速度 (FPS) ↑ |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | FastDepth-Lite (UNet-MobileNetV3) | {fast_res['params_m']:.2f} | {fast_res['abs_rel']:.4f} | {fast_res['rmse']:.4f} | {fast_res['delta1']:.4f} | {fast_res['acoustic_rmse']:.4f} | {fast_res['fps']:.1f} |
-| EchoDepthNet Baseline (FPN w/o FG-EDFM) | {base_res['params_m']:.2f} | {base_res['abs_rel']:.4f} | {base_res['rmse']:.4f} | {base_res['delta1']:.4f} | {base_res['acoustic_rmse']:.4f} | {base_res['fps']:.1f} |
-| **EchoDepthNet (Ours, +Residual FG-EDFM)** | **{full_res['params_m']:.2f}** | **{full_res['abs_rel']:.4f}** | **{full_res['rmse']:.4f}** | **{full_res['delta1']:.4f}** | **{full_res['acoustic_rmse']:.4f}** | **{full_res['fps']:.1f}** |
+| EchoDepthNet Baseline (FPN w/o EG-DFM) | {base_res['params_m']:.2f} | {base_res['abs_rel']:.4f} | {base_res['rmse']:.4f} | {base_res['delta1']:.4f} | {base_res['acoustic_rmse']:.4f} | {base_res['fps']:.1f} |
+| **EchoDepthNet (Ours, +Residual EG-DFM)** | **{full_res['params_m']:.2f}** | **{full_res['abs_rel']:.4f}** | **{full_res['rmse']:.4f}** | **{full_res['delta1']:.4f}** | **{full_res['acoustic_rmse']:.4f}** | **{full_res['fps']:.1f}** |
 """
     (out_dir / "ablation_report.md").write_text(report, encoding="utf-8")
     print(report)

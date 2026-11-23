@@ -10,7 +10,7 @@ const STAGES = [
   {
     no: '02',
     title: 'EchoDepthNet 神经深度 + Sobel',
-    desc: '支持 3×3 Sobel 边缘提取，并已打通自研 1.11M EchoDepthNet（Residual FG-EDFM）ONNX 浏览器本地推理，同步输出近场深度图与 16×48 声学危险度矩阵。',
+    desc: '支持 3×3 Sobel 边缘提取，并已打通自研 1.11M EchoDepthNet（Residual EG-DFM）ONNX 浏览器本地推理，同步输出近场深度图与 16×48 声学矩阵。',
     tag: 'ONNX Runtime · 44ms',
   },
   {

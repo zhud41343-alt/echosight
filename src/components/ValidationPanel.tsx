@@ -92,9 +92,9 @@ const CLAIM_ROWS: Array<{
     evidence: 'public/models/echodepth_net.onnx (SHA-256 见 MODEL_PROVENANCE.md) + src/engine/acousticRouter.ts（线上实测 44ms，数值误差 4.77e-07）',
   },
   {
-    claim: 'EchoSafe V8.4 严格新鲜度、FrameTracker 防重复推理、必填 frameId 契约、连续声场熔断与无障碍通知分发',
+    claim: 'EchoSafe V8.5 严格新鲜度、FrameTracker 防重复推理、必填 frameId 契约、连续声场熔断与无障碍通知分发',
     tier: '已实现且自动化验证',
-    evidence: 'src/engine/echoSafe.ts + src/engine/accessibleNotifier.ts + tests/（8 文件 44/44 + Python 管道 3/3 通过）',
+    evidence: 'src/engine/echoSafe.ts + src/engine/accessibleNotifier.ts + tests/（9 文件 45/45 + Python 管道 3/3 通过）',
   },
   {
     claim: '无竞态统一语音与空间音效协调（playbackId 守卫 + 全空间音互斥 + stopAllImmediate 节点清理）',

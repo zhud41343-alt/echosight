@@ -41,6 +41,12 @@ import {
   runEchoDepthInference,
 } from '../engine/echoDepthOnnx';
 import { AcousticMatrixRouter, ActiveAcousticSource } from '../engine/acousticRouter';
+import { FrameTracker } from '../engine/echoSafe';
+
+type VideoWithVfc = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: (now: number) => void) => number;
+  cancelVideoFrameCallback?: (id: number) => void;
+};
 
 const CANVAS_W = 480;
 const CANVAS_H = 300;
@@ -129,7 +135,10 @@ export const VisionScanner: React.FC = () => {
 
   // Refs for real-time animation loop (strictly separated Sobel vs Neural EchoDepthNet router)
   const routerRef = useRef(new AcousticMatrixRouter(MATRIX_COLS, MATRIX_ROWS));
-  const neuralFrameIdRef = useRef<number>(0);
+  const cameraFrameTrackerRef = useRef(new FrameTracker());
+  const vfcHandleRef = useRef<number | null>(null);
+  const lastVideoTimeRef = useRef<number>(-1);
+  const cameraSessionRef = useRef<number>(0);
   const [activeAudioSource, setActiveAudioSource] = useState<ActiveAcousticSource>('sobel');
   const edgeImageRef = useRef<ImageData | null>(null);
   const scanColRef = useRef<number>(0);
@@ -168,23 +177,59 @@ export const VisionScanner: React.FC = () => {
     recomputeCurrentFrame();
   }, [recomputeCurrentFrame]);
 
-  // Cleanup camera on unmount
+  // Cleanup camera & video frame watcher on unmount
+  const stopCameraFrameWatcher = useCallback(() => {
+    const vid = videoRef.current as VideoWithVfc | null;
+    if (vid && vfcHandleRef.current !== null && typeof vid.cancelVideoFrameCallback === 'function') {
+      try {
+        vid.cancelVideoFrameCallback(vfcHandleRef.current);
+      } catch {
+        // Ignore
+      }
+    }
+    vfcHandleRef.current = null;
+    lastVideoTimeRef.current = -1;
+    cameraFrameTrackerRef.current.reset();
+  }, []);
+
+  const attachCameraFrameWatcher = useCallback((myCamSession: number) => {
+    const vid = videoRef.current as VideoWithVfc | null;
+    if (!vid || typeof vid.requestVideoFrameCallback !== 'function') return;
+    const onFrame = (now: number) => {
+      if (cameraSessionRef.current !== myCamSession) return;
+      if (typeof document === 'undefined' || !document.hidden) {
+        cameraFrameTrackerRef.current.recordNewFrame(now);
+      }
+      vfcHandleRef.current = vid.requestVideoFrameCallback!(onFrame);
+    };
+    vfcHandleRef.current = vid.requestVideoFrameCallback(onFrame);
+  }, []);
+
   useEffect(() => {
     return () => {
+      cameraSessionRef.current += 1;
+      stopCameraFrameWatcher();
+      routerRef.current.invalidateNeural();
+      spatialAudio.stopAllImmediate();
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach((t) => t.stop());
       }
     };
-  }, []);
+  }, [stopCameraFrameWatcher]);
 
   // Main render + scan + FFT spectrum animation loop
   useEffect(() => {
     let rafId = 0;
 
     const renderLoop = (timestamp: number) => {
-      // If camera is live, continuously refresh Sobel slot ONLY (never overwrites neural slot!)
+      // If camera is live, record real frame advance (fallback when rVFC unsupported) & update Sobel slot ONLY
       if (cameraActive && videoRef.current && videoRef.current.readyState >= 2) {
+        const vid = videoRef.current as VideoWithVfc;
+        if (typeof vid.requestVideoFrameCallback !== 'function' && vid.currentTime !== lastVideoTimeRef.current) {
+          lastVideoTimeRef.current = vid.currentTime;
+          cameraFrameTrackerRef.current.recordNewFrame(timestamp);
+        }
         const srcCanvas = sourceCanvasRef.current;
         const sCtx = srcCanvas?.getContext('2d', { willReadFrequently: true });
         if (srcCanvas && sCtx) {
@@ -220,6 +265,10 @@ export const VisionScanner: React.FC = () => {
             });
           }
           scanColRef.current = (col + 1) % MATRIX_COLS;
+        } else if (viewMode === 'depth') {
+          // P0-1 (V8.5): Stop lingering spatial audio immediately when neural feed expires/freezes
+          spatialAudio.stopAllImmediate();
+          setActiveAudioSource('none');
         }
       }
 
@@ -363,7 +412,6 @@ export const VisionScanner: React.FC = () => {
   // Run EchoDepthNet ONNX real-time neural depth & 48x16 acoustic hazard matrix when 'depth' view is active
   useEffect(() => {
     const myGen = routerRef.current.beginGeneration();
-    neuralFrameIdRef.current = 0;
 
     if (viewMode !== 'depth') {
       setActiveAudioSource('sobel');
@@ -377,35 +425,66 @@ export const VisionScanner: React.FC = () => {
       if (cancelled || depthBusyRef.current) return;
       if (typeof document !== 'undefined' && document.hidden) {
         routerRef.current.invalidateNeural();
+        spatialAudio.stopAllImmediate();
         setActiveAudioSource('none');
         return;
       }
       const src = sourceCanvasRef.current;
       if (!src) return;
+
+      // P0-1 (V8.5): On live camera, MUST claim a genuinely NEW, fresh video frame before running ONNX!
+      let frameId = 1;
+      let capturedAt = performance.now();
+      if (cameraActive) {
+        const claimed = cameraFrameTrackerRef.current.claimNextFrameForInference(capturedAt, 2500);
+        if (!claimed) {
+          // Camera has not delivered a new frame -> NEVER re-infer old frame or refresh TTL!
+          const cur = routerRef.current.resolveActive('depth', capturedAt, false);
+          if (!cur.matrix) {
+            spatialAudio.stopAllImmediate();
+            setActiveAudioSource('none');
+            setDepthStatus('摄像头画面未推进或已冻结，已停止过期神经声场');
+          }
+          return;
+        }
+        frameId = claimed.frameId;
+        capturedAt = claimed.capturedAt;
+      }
+
       depthBusyRef.current = true;
       const startedAt = performance.now();
-      const myFrameId = ++neuralFrameIdRef.current;
       try {
         const out = await runEchoDepthInference(src);
         const completedAt = performance.now();
         if (cancelled) return;
         if (!out) {
           routerRef.current.invalidateNeural();
+          spatialAudio.stopAllImmediate();
           setActiveAudioSource('none');
           return;
         }
-        const committed = routerRef.current.commitNeuralPacket({
-          matrix: out.acousticMatrix,
-          inputSource,
-          frameId: myFrameId,
-          generation: myGen,
-          startedAt,
-          completedAt,
-          // Live camera neural packets expire after 3000ms (freeze protection); static preset/upload valid until input changes
-          expiresAt: cameraActive ? completedAt + 3000 : Number.POSITIVE_INFINITY,
-          modelVersion: ECHO_DEPTH_MODEL_VERSION,
-        });
-        if (!committed.accepted) return;
+        const committed = routerRef.current.commitNeuralPacket(
+          {
+            matrix: out.acousticMatrix,
+            inputSource,
+            frameId,
+            generation: myGen,
+            capturedAt,
+            startedAt,
+            completedAt,
+            // Live camera TTL anchored strictly to raw frame capture time T0 (never extended by re-inference)
+            expiresAt: cameraActive ? capturedAt + 3000 : Number.POSITIVE_INFINITY,
+            modelVersion: ECHO_DEPTH_MODEL_VERSION,
+          },
+          completedAt
+        );
+        if (!committed.accepted) {
+          if (cameraActive) {
+            spatialAudio.stopAllImmediate();
+            setActiveAudioSource('none');
+          }
+          return;
+        }
 
         if (!depthHeatmapCanvasRef.current) {
           const hc = document.createElement('canvas');
@@ -722,11 +801,25 @@ export const VisionScanner: React.FC = () => {
           video: { facingMode: 'environment', width: 480, height: 300 },
           audio: false,
         });
+        const myCamSession = ++cameraSessionRef.current;
+        stopCameraFrameWatcher();
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          track.onended = () => {
+            if (cameraSessionRef.current !== myCamSession) return;
+            stopCameraFrameWatcher();
+            routerRef.current.invalidateNeural();
+            spatialAudio.stopAllImmediate();
+            setActiveAudioSource('none');
+            setCameraActive(false);
+          };
+        }
         uploadedImgRef.current = null;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
+        attachCameraFrameWatcher(myCamSession);
         setCameraActive(true);
         setInputSource('camera');
       } catch {
@@ -761,6 +854,10 @@ export const VisionScanner: React.FC = () => {
   const toggleCamera = async () => {
     setCameraError(null);
     if (cameraActive) {
+      cameraSessionRef.current += 1;
+      stopCameraFrameWatcher();
+      routerRef.current.invalidateNeural();
+      spatialAudio.stopAllImmediate();
       if (videoRef.current?.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
         videoRef.current.srcObject = null;
@@ -775,11 +872,25 @@ export const VisionScanner: React.FC = () => {
         video: { facingMode: 'environment', width: 480, height: 300 },
         audio: false,
       });
+      const myCamSession = ++cameraSessionRef.current;
+      stopCameraFrameWatcher();
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        track.onended = () => {
+          if (cameraSessionRef.current !== myCamSession) return;
+          stopCameraFrameWatcher();
+          routerRef.current.invalidateNeural();
+          spatialAudio.stopAllImmediate();
+          setActiveAudioSource('none');
+          setCameraActive(false);
+        };
+      }
       uploadedImgRef.current = null;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      attachCameraFrameWatcher(myCamSession);
       setCameraActive(true);
       setInputSource('camera');
       spatialAudio.ensureContext();
