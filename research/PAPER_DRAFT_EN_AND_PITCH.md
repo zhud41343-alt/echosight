@@ -17,8 +17,8 @@ Sensory substitution devices (SSDs) translate visual scenes into auditory cues t
 #### 1.1 Overall Dual-Head Architecture (EchoDepthNet)
 Given an RGB input image $X \in [0, 1]^{3 \times H \times W}$, EchoDepthNet extracts four multi-scale feature maps $\{F_1, F_2, F_3, F_4\}$ via a MobileNetV3-Small backbone (strides $4, 8, 16, 32$). Simultaneously, a parameter-free **Differentiable Sobel Prior** computes Rec.709 luminance $Y = 0.2126 R + 0.7152 G + 0.0722 B$ and structural edge magnitude $E = \text{clip}(\sqrt{(K_x * Y)^2 + (K_y * Y)^2 + \epsilon}, 0, 1)$.
 
-#### 1.2 Residual Frequency-Guided Edge-Depth Fusion Module (Residual FG-EDFM)
-Direct multiplicative gating without skip pathways attenuates low-frequency depth semantics and degrades convergence in lightweight decoders. At each FPN decoding stage $k \in \{3, 2, 1\}$, Residual FG-EDFM preserves the global semantic feature via a shortcut projection $\mathcal{S}(\cdot)$ (identity when channel dimensions match, otherwise $1\times 1$ Conv-BN) while computing depthwise-separable edge-augmented features $U_k = \mathcal{F}_{\text{dw}}([F_k, E_k])$ and a joint feature-edge gate $G_k = \sigma(\text{Conv}_{1\times 1}([U_k, E_k]))$:
+#### 1.2 Residual Edge-Guided Depth Fusion Module (Residual EG-DFM)
+Direct multiplicative gating without skip pathways attenuates low-frequency depth semantics and degrades convergence in lightweight decoders. At each FPN decoding stage $k \in \{3, 2, 1\}$, Residual EG-DFM preserves the global semantic feature via a shortcut projection $\mathcal{S}(\cdot)$ (identity when channel dimensions match, otherwise $1\times 1$ Conv-BN) while computing depthwise-separable edge-augmented features $U_k = \mathcal{F}_{\text{dw}}([F_k, E_k])$ and a joint feature-edge gate $G_k = \sigma(\text{Conv}_{1\times 1}([U_k, E_k]))$:
 $$D_k = \text{SiLU}\Big(\mathcal{S}(F_k) + \gamma_k \cdot (U_k \odot G_k)\Big)$$
 where $\gamma_k$ is a learnable residual scaling parameter initialized to $0.25$.
 
@@ -40,17 +40,17 @@ To bridge neural inference with real-world BLV safety, the edge deployment layer
 ### 2. Experimental Analysis
 
 #### 2.1 Controlled Three-Model Benchmark & Ablation Study (Pretrained MobileNetV3-Small, Seed=42)
-All three lightweight architectures—**FastDepth-Lite** (plain progressive UNet decoder), **EchoDepthNet Baseline** (FPN w/o FG-EDFM), and **EchoDepthNet Full (+Residual FG-EDFM)**—were trained for 15 epochs with ImageNet-pretrained MobileNetV3-Small encoders under identical deterministic seed (`seed=42`), AdamW (`lr=2.5e-3`), cosine annealing, and scale-balanced composite loss (`1.8 L1 + 0.45 SILog + 0.6 Grad + 1.0 Acoustic`) on 320 training / 64 validation procedural 3D corridor RGB-D scenes ($256 \times 256$).
+All three lightweight architectures—**FastDepth-Lite** (plain progressive UNet decoder), **EchoDepthNet Baseline** (FPN w/o EG-DFM), and **EchoDepthNet Full (+Residual EG-DFM)**—were trained for 15 epochs with ImageNet-pretrained MobileNetV3-Small encoders under identical deterministic seed (`seed=42`), AdamW (`lr=2.5e-3`), cosine annealing, and scale-balanced composite loss (`1.8 L1 + 0.45 SILog + 0.6 Grad + 1.0 Acoustic`) on 320 training / 64 validation procedural 3D corridor RGB-D scenes ($256 \times 256$).
 
 | Model Variant | Params (M) ↓ | AbsRel ↓ | RMSE ↓ | $\delta_1$ (<1.25) ↑ | Acoustic RMSE ↓ | CPU FPS ↑ |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | FastDepth-Lite (UNet-MobileNetV3) | 1.02 | 0.0706 | 0.0798 | 0.9047 | 0.0562 | 88.2 |
-| EchoDepthNet Baseline (FPN w/o FG-EDFM) | 1.08 | 0.0710 | 0.0872 | 0.8864 | 0.0583 | 94.1 |
-| **EchoDepthNet (+Residual FG-EDFM, Ours)** | **1.11** | **0.0754** | **0.0824** | **0.8970** | **0.0577** | **74.2** |
+| EchoDepthNet Baseline (FPN w/o EG-DFM) | 1.08 | 0.0710 | 0.0872 | 0.8864 | 0.0583 | 94.1 |
+| **EchoDepthNet (+Residual EG-DFM, Ours)** | **1.11** | **0.0754** | **0.0824** | **0.8970** | **0.0577** | **74.2** |
 
 **Key Findings**:
-1. **Consistent Ablation Gain over FPN Baseline**: Adding Residual FG-EDFM (+0.03M params, +2.8%) improves FPN Baseline across RMSE ($0.0872 \to 0.0824$, $-5.5\%$), $\delta_1$ ($0.8864 \to 0.8970$, $+1.06\text{ pp}$), and Acoustic RMSE ($0.0583 \to 0.0577$).
-2. **Honest Comparison vs. FastDepth-Lite**: On simple noise-free synthetic rectangular blocks, the simpler progressive UNet (`FastDepth-Lite`) reaches $\delta_1 = 0.9047$, demonstrating the necessity of evaluating Residual FG-EDFM on complex real indoor scenes (NYU Depth V2) where high-frequency occlusion edges dominate.
+1. **Ablation Trade-off over FPN Baseline**: Adding Residual EG-DFM (+0.03M params, +2.8%) improves FPN Baseline on RMSE ($0.0872 \to 0.0824$, $-5.5\%$), $\delta_1$ ($0.8864 \to 0.8970$, $+1.06\text{ pp}$), and Acoustic RMSE ($0.0583 \to 0.0577$), while slightly increasing AbsRel ($0.0710 \to 0.0754$) and lowering CPU throughput ($94.1 \to 74.2\text{ FPS}$).
+2. **Honest Comparison vs. FastDepth-Lite**: On simple synthetic rectangular blocks, the simpler progressive UNet (`FastDepth-Lite`) reaches $\delta_1 = 0.9047$, demonstrating the necessity of evaluating Residual EG-DFM on complex real indoor scenes (NYU Depth V2) where high-frequency occlusion edges dominate.
 3. **Real Browser ONNX Deployment Verified**: Exporting `echodepth_best.pt` to ONNX opset 17 (`public/models/echodepth_net.onnx`, $4.46\text{ MB}$) achieves PyTorch vs. ONNX Runtime numerical parity of `max_abs_diff(depth) = 4.77e-07`, `max_abs_diff(acoustic) = 7.75e-07`, and runs live inside Chromium via `onnxruntime-web` WASM at **51 ms** per $256 \times 256$ frame with zero console errors.
 
 #### 2.2 Real-World Benchmark Protocol (NYU Depth V2 — Ready for Cloud GPU Run)

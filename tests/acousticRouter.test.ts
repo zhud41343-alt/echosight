@@ -22,12 +22,28 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
       inputSource: 'camera',
       frameId: 1,
       generation: gen,
+      capturedAt: 980,
       startedAt: 1000,
       completedAt: 1045,
-      expiresAt: 4045,
+      expiresAt: 3980,
       modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
     });
     expect(res.accepted).toBe(true);
+
+    // P0-1 (V8.5): Equal frameId resubmission MUST be rejected (cannot refresh TTL!)
+    expect(
+      router.commitNeuralPacket({
+        matrix: neuralB,
+        inputSource: 'camera',
+        frameId: 1,
+        generation: gen,
+        capturedAt: 980,
+        startedAt: 1450,
+        completedAt: 1500,
+        expiresAt: 4500,
+        modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
+      }).accepted
+    ).toBe(false);
 
     // Live camera rAF loop keeps updating Sobel Matrix A -> MUST NOT overwrite Neural Matrix B!
     router.updateSobel(fillMatrix(0.22));
@@ -58,9 +74,10 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
         inputSource: 'camera',
         frameId: 1,
         generation: g1,
+        capturedAt: 990,
         startedAt: 1000,
         completedAt: 1050,
-        expiresAt: 4050,
+        expiresAt: 3990,
         modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
       }).accepted
     ).toBe(false);
@@ -72,9 +89,10 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
         inputSource: 'camera',
         frameId: 2,
         generation: g2,
+        capturedAt: 1990,
         startedAt: 2000,
         completedAt: 2050,
-        expiresAt: 5050,
+        expiresAt: 4990,
         modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
       }).accepted
     ).toBe(true);
@@ -86,11 +104,30 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
         inputSource: 'camera',
         frameId: 1,
         generation: g2,
+        capturedAt: 1880,
         startedAt: 1900,
         completedAt: 2060,
-        expiresAt: 5060,
+        expiresAt: 4880,
         modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
       }).accepted
+    ).toBe(false);
+
+    // ONNX completing AFTER raw frame T0 already expired (> 3000ms) -> REJECTED!
+    expect(
+      router.commitNeuralPacket(
+        {
+          matrix: fillMatrix(0.6),
+          inputSource: 'camera',
+          frameId: 3,
+          generation: g2,
+          capturedAt: 2000,
+          startedAt: 5100,
+          completedAt: 5200,
+          expiresAt: 8200,
+          modelVersion: 'EchoDepthNet-ResidualEGDFM-1.11M',
+        },
+        5200
+      ).accepted
     ).toBe(false);
 
     // After TTL expiration (camera freeze > 3000ms) -> stops audio (source: 'none', matrix: null)
@@ -127,6 +164,7 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
         inputSource: 'preset',
         frameId: 1,
         generation: g,
+        capturedAt: 95,
         startedAt: 100,
         completedAt: 150,
         expiresAt: Number.POSITIVE_INFINITY,

@@ -27,8 +27,8 @@ Visual-to-auditory sensory substitution offers a non-invasive pathway for spatia
 
 \section{Methodology}
 
-\subsection{Differentiable Sobel Prior and Residual FG-EDFM}
-Given an RGB frame $X \in [0,1]^{3 \times H \times W}$, a parameter-free differentiable Sobel layer extracts Rec.709 luminance $Y = 0.2126R + 0.7152G + 0.0722B$ and edge magnitude $E = \mathrm{clip}(\sqrt{(K_x * Y)^2 + (K_y * Y)^2 + \epsilon}, 0, 1)$. At each lightweight FPN decoding stage $k \in \{3, 2, 1\}$, Residual FG-EDFM preserves global depth semantics through a shortcut projection $\mathcal{S}(\cdot)$ while fusing multi-scale edge features $E_k$:
+\subsection{Differentiable Sobel Prior and Residual EG-DFM}
+Given an RGB frame $X \in [0,1]^{3 \times H \times W}$, a parameter-free differentiable Sobel layer extracts Rec.709 luminance $Y = 0.2126R + 0.7152G + 0.0722B$ and edge magnitude $E = \mathrm{clip}(\sqrt{(K_x * Y)^2 + (K_y * Y)^2 + \epsilon}, 0, 1)$. At each lightweight FPN decoding stage $k \in \{3, 2, 1\}$, Residual EG-DFM preserves global depth semantics through a shortcut projection $\mathcal{S}(\cdot)$ while fusing multi-scale edge features $E_k$:
 \begin{equation}
   U_k = \mathcal{F}_{\text{dw}}([F_k, E_k]), \quad G_k = \sigma(\mathrm{Conv}_{1\times 1}([U_k, E_k]))
 \end{equation}
@@ -49,7 +49,7 @@ At runtime, EchoSafe enforces six explicit states (\texttt{IDLE}, \texttt{INITIA
 \section{Experimental Results}
 
 \subsection{Controlled Ablation on 3D Corridor Benchmark}
-Table~\ref{tab:ablation} reports deterministic 15-epoch ablation results (\texttt{seed=42}, $256\times 256$, CPU inference benchmark). Residual FG-EDFM consistently outperforms the plain FPN baseline across all four accuracy metrics with negligible parameter overhead ($+0.03\text{M}$).
+Table~\ref{tab:ablation} reports deterministic 15-epoch validation results (\texttt{seed=42}, $256\times 256$, CPU inference benchmark). Residual EG-DFM improves RMSE, $\delta_1$, and acoustic RMSE over the plain FPN baseline with $+0.03\text{M}$ parameter overhead, while FastDepth-Lite remains strong on simple synthetic blocks.
 
 \begin{table}[t]
 \centering
@@ -61,8 +61,8 @@ Table~\ref{tab:ablation} reports deterministic 15-epoch ablation results (\textt
 Model Variant & Params (M) & AbsRel $\downarrow$ & RMSE $\downarrow$ & $\delta_1 \uparrow$ & Acoustic RMSE $\downarrow$ & CPU FPS $\uparrow$ \\
 \midrule
 FastDepth-Lite (UNet) & 1.02 & 0.0706 & 0.0798 & 0.9047 & 0.0562 & 88.2 \\
-FPN Baseline (w/o FG-EDFM) & 1.08 & 0.0710 & 0.0872 & 0.8864 & 0.0583 & 94.1 \\
-\textbf{Ours (+Residual FG-EDFM)} & \textbf{1.11} & \textbf{0.0754} & \textbf{0.0824} & \textbf{0.8970} & \textbf{0.0577} & \textbf{74.2} \\
+FPN Baseline (w/o EG-DFM) & 1.08 & 0.0710 & 0.0872 & 0.8864 & 0.0583 & 94.1 \\
+\textbf{Ours (+Residual EG-DFM)} & \textbf{1.11} & \textbf{0.0754} & \textbf{0.0824} & \textbf{0.8970} & \textbf{0.0577} & \textbf{74.2} \\
 \bottomrule
 \end{tabular}}
 \end{table}

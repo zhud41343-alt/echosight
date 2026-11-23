@@ -29,6 +29,8 @@ jobs:
         run: npm ci
       - name: Run unit tests
         run: npm test
+      - name: Run claim consistency audit
+        run: python3 research/check_claim_consistency.py
       - name: Build
         run: npm run build
       - name: Setup Pages

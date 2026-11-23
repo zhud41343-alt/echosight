@@ -11,8 +11,8 @@
 | ![EchoDepthNet ONNX 实时深度热力图](docs/screenshots/echodepth_onnx_live.png) | ![移动端随身助行界面](docs/screenshots/mobile_companion_360.png) |
 
 ## 核心工程创新
-1. **前后端打通：EchoDepthNet (1.11M) 端侧神经深度 ONNX 实时推理（`research/` → `public/models/echodepth_net.onnx` → `src/engine/echoDepthOnnx.ts`）**：
-   - 自研轻量化双头网络（MobileNetV3-Small + 可微 Sobel 先验 + **Residual FG-EDFM** 残差频域边缘深度融合），单次前向推理同时输出近场深度图与 `16×48` 声学危险度矩阵；在 `01 声画扫描 → 神经深度` 中通过 `onnxruntime-web` WASM 在浏览器本地实测 **51ms** 实时推理并直接驱动 3D HRTF 声场。
+1. **前后端打通：EchoDepthNet (1.11M) 端侧神经深度 ONNX 实时推理（`research/` → `public/models/echodepth_net.onnx` → `src/engine/echoDepthOnnx.ts` + `src/engine/acousticRouter.ts`）**：
+   - 自研轻量化双头网络（MobileNetV3-Small + 可微空间 Sobel 边缘先验 + **Residual EG-DFM** 残差边缘引导深度融合模块），单次前向推理同时输出近场深度图与 `16×48` 声学矩阵；在 `01 声画扫描 → 神经深度` 中通过 `onnxruntime-web` WASM 线上实测单次推理 **44ms**（本地开发模式 **51ms**，256×256），并经 `AcousticMatrixRouter` 防覆盖路由驱动 3D HRTF 声场。
 2. **EchoSafe V6–V8 可靠性状态机与全链路失效保护（`src/engine/echoSafe.ts`、`src/engine/accessibleNotifier.ts`）**：
    - 六状态精细管理（`IDLE` / `INITIALIZING` / `ACTIVE` / `DEGRADED` / `UNAVAILABLE` / `DEMO`），严格隔离真实摄像头（`REAL_CAMERA`）与模拟演示数据（`SIMULATED_SCENE`）。
    - **单调视频帧标识与必填契约（`FrameTracker` + `PerceptionPacket`）**：每帧真实新画面分配单调 `frameId`，运行时强制校验正整数 `frameId` 与递增下界，防止低帧率摄像头下同帧重复推理或乱序旧包覆盖。
@@ -23,7 +23,7 @@
    - 提供 4 种听觉提示策略，默认「简洁语音优先」以减少环境听觉干扰；实验性单路环境异常声响提示默认关闭、按需开启。
 
 ## 双模式架构
-- **随身助行（默认首页）**：中文清晰主状态、全幅原生纵横比摄像头视窗与实时识别框、生命周期受控的语音查询与快捷按钮、折叠式技术参数栏、纯黑高对比显示模式（已标注为「高对比模式」，未宣称已通过 WCAG AAA 认证）。
+- **随身助行（默认首页）**：中文清晰主状态、全幅原生纵横比摄像头视窗与实时识别框、生命周期受控的语音查询与快捷按钮、折叠式技术参数栏、纯黑高对比显示模式（仅标注为「高对比模式」，未宣称已通过第三方无障碍等级认证）。
 - **专业实验台（6 大模块）**：
   1. **01 声画扫描**：摄像头/图片/内置演示场景（明确标注数据来源）+ Sobel 边缘 + 48×16 声学矩阵 + 180° 双耳方位雷达 + 点探声场 + FFT 频谱。
   2. **02 场景剧场**：4 个盲人生活动态模拟场景，支持上帝视角与全黑视角切换。
@@ -40,7 +40,7 @@
 ## 本地开发、测试与构建
 ```bash
 npm install
-npm test        # 运行 Vitest 自动化单元测试套件（44 项用例）
+npm test        # 运行 Vitest 自动化单元测试套件（45 项用例）
 npm run dev     # 本地预览
 npm run build   # TypeScript 严格检查并生成 dist/ 静态构建产物
 ```

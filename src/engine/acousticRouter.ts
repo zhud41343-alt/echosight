@@ -1,6 +1,7 @@
-// Acoustic Matrix Router (P0-1 V8.4)
+// Acoustic Matrix Router (P0-1 V8.5)
 // Strictly isolates Sobel edge acoustic matrices from EchoDepthNet ONNX neural matrices
-// so live camera Sobel updates can NEVER overwrite the active neural matrix during HRTF rendering.
+// and binds live camera neural packets to real raw video frame identity (`frameId` & `capturedAt`),
+// preventing frozen cameras or duplicate ONNX runs from refreshing TTL or feeding stale audio to HRTF.
 
 export type ScannerViewMode = 'source' | 'sobel' | 'matrix' | 'depth';
 export type ScannerInputSource = 'preset' | 'camera' | 'upload';
@@ -9,10 +10,16 @@ export type ActiveAcousticSource = 'sobel' | 'neural_echodepth' | 'none';
 export interface NeuralAcousticPacket {
   matrix: number[][];
   inputSource: ScannerInputSource;
+  /** Strictly monotonic real video frame ID from FrameTracker (or 1 for static preset/upload) */
   frameId: number;
   generation: number;
+  /** Real raw frame capture timestamp T0 (for camera) */
+  capturedAt: number;
+  /** ONNX inference start timestamp T1 */
   startedAt: number;
+  /** ONNX inference completion timestamp T2 */
   completedAt: number;
+  /** Expiry deadline anchored to T0 (never refreshed by re-inferring the same frame) */
   expiresAt: number;
   modelVersion: string;
 }
@@ -24,6 +31,7 @@ export interface ResolvedAcousticFeed {
     | 'page_hidden'
     | 'neural_not_ready'
     | 'neural_expired'
+    | 'neural_frame_stale'
     | 'neural_invalid'
     | 'sobel_not_ready';
 }
@@ -83,23 +91,39 @@ export class AcousticMatrixRouter {
     this.neuralPacket = null;
   }
 
-  public commitNeuralPacket(packet: NeuralAcousticPacket): { accepted: boolean; reason?: string } {
+  public commitNeuralPacket(
+    packet: NeuralAcousticPacket,
+    now?: number,
+    maxRawFrameAgeMs = 3000
+  ): { accepted: boolean; reason?: string } {
     if (packet.generation !== this.generation) {
       return { accepted: false, reason: 'stale_generation' };
     }
     if (!Number.isInteger(packet.frameId) || packet.frameId <= 0) {
       return { accepted: false, reason: 'invalid_frame_id' };
     }
-    if (packet.frameId < this.lastAcceptedNeuralFrameId) {
-      return { accepted: false, reason: 'out_of_order_frame' };
+    // P0-1 (V8.5): Strictly monotonic frameId — equal or older frameId MUST be rejected!
+    if (packet.frameId <= this.lastAcceptedNeuralFrameId) {
+      return { accepted: false, reason: 'duplicate_or_out_of_order_frame' };
     }
     if (
+      !Number.isFinite(packet.capturedAt) ||
       !Number.isFinite(packet.startedAt) ||
       !Number.isFinite(packet.completedAt) ||
+      packet.capturedAt > packet.startedAt ||
       packet.startedAt > packet.completedAt ||
       packet.completedAt > packet.expiresAt
     ) {
       return { accepted: false, reason: 'invalid_timestamps' };
+    }
+    const checkNow = now ?? packet.completedAt;
+    if (packet.inputSource === 'camera') {
+      if (packet.capturedAt > checkNow + 50 || checkNow - packet.capturedAt > maxRawFrameAgeMs) {
+        return { accepted: false, reason: 'stale_raw_frame' };
+      }
+      if (checkNow > packet.expiresAt) {
+        return { accepted: false, reason: 'already_expired' };
+      }
     }
     if (!validateAcousticMatrix(packet.matrix, this.cols, this.rows)) {
       return { accepted: false, reason: 'invalid_matrix' };
@@ -112,7 +136,8 @@ export class AcousticMatrixRouter {
   public resolveActive(
     viewMode: ScannerViewMode,
     now: number,
-    pageHidden = false
+    pageHidden = false,
+    maxRawFrameAgeMs = 3000
   ): ResolvedAcousticFeed {
     if (pageHidden) {
       return { source: 'none', matrix: null, reason: 'page_hidden' };
@@ -127,6 +152,12 @@ export class AcousticMatrixRouter {
       }
       if (now > this.neuralPacket.expiresAt) {
         return { source: 'none', matrix: null, reason: 'neural_expired' };
+      }
+      if (
+        this.neuralPacket.inputSource === 'camera' &&
+        (this.neuralPacket.capturedAt > now + 50 || now - this.neuralPacket.capturedAt > maxRawFrameAgeMs)
+      ) {
+        return { source: 'none', matrix: null, reason: 'neural_frame_stale' };
       }
       return { source: 'neural_echodepth', matrix: this.neuralPacket.matrix };
     }
