@@ -31,8 +31,10 @@ def test_export_fails_on_missing_checkpoint():
         capture_output=True,
         text=True,
     )
-    assert res.returncode != 0, "export_onnx.py MUST fail when checkpoint is missing!"
-    assert "FileNotFoundError" in res.stderr or "not found" in res.stderr.lower()
+    assert res.returncode != 0, f"export_onnx.py MUST fail when checkpoint is missing! stdout={res.stdout}"
+    assert "FileNotFoundError" in res.stderr and "Refusing to export untrained" in res.stderr, (
+        f"Expected FileNotFoundError on missing checkpoint, got stderr:\n{res.stderr}\nstdout:\n{res.stdout}"
+    )
 
 
 def test_evaluate_fails_on_missing_checkpoint(tmp_path: Path):
@@ -42,7 +44,10 @@ def test_evaluate_fails_on_missing_checkpoint(tmp_path: Path):
         capture_output=True,
         text=True,
     )
-    assert res.returncode != 0, "evaluate_ablation.py MUST fail when checkpoints are missing!"
+    assert res.returncode != 0, f"evaluate_ablation.py MUST fail when checkpoints are missing! stdout={res.stdout}"
+    assert "FileNotFoundError" in res.stderr and "Refusing to silently evaluate" in res.stderr, (
+        f"Expected FileNotFoundError on missing checkpoints, got stderr:\n{res.stderr}\nstdout:\n{res.stdout}"
+    )
 
 
 def test_published_onnx_shapes_and_finite_outputs():

@@ -173,4 +173,35 @@ describe('P0-1 (V8.4): AcousticMatrixRouter — Strict Sobel vs EchoDepthNet Neu
     ).toBe(false);
     expect(router.resolveActive('depth', 200).matrix).toBeNull();
   });
+
+  it('P1-01 (V8.7): rejects equal and older camera frameId in updateSobel so TTL cannot be refreshed', () => {
+    const router = new AcousticMatrixRouter(48, 16);
+    const m1 = fillMatrix(0.4);
+    const m2 = fillMatrix(0.9);
+
+    // First camera frame (frameId=5, T0=1000) accepted
+    expect(
+      router.updateSobel(m1, { inputSource: 'camera', frameId: 5, capturedAt: 1000 })
+    ).toBe(true);
+    expect(router.resolveActive('sobel', 1200).matrix![0][0]).toBeCloseTo(0.4);
+
+    // Equal frameId=5 resubmitted later (T0=2500) -> MUST BE REJECTED!
+    expect(
+      router.updateSobel(m2, { inputSource: 'camera', frameId: 5, capturedAt: 2500 })
+    ).toBe(false);
+    // Older frameId=4 -> MUST BE REJECTED!
+    expect(
+      router.updateSobel(m2, { inputSource: 'camera', frameId: 4, capturedAt: 2600 })
+    ).toBe(false);
+
+    // Original frameId=5 expires strictly based on T0=1000 (+3000ms = 4000ms)
+    expect(router.resolveActive('sobel', 4100).source).toBe('none');
+    expect(router.resolveActive('sobel', 4100).reason).toBe('sobel_frame_stale');
+
+    // Genuine new frameId=6 (T0=4200) accepted immediately
+    expect(
+      router.updateSobel(m2, { inputSource: 'camera', frameId: 6, capturedAt: 4200 })
+    ).toBe(true);
+    expect(router.resolveActive('sobel', 4300).matrix![0][0]).toBeCloseTo(0.9);
+  });
 });

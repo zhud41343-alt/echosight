@@ -104,10 +104,10 @@ export class AcousticMatrixRouter {
       if (!Number.isInteger(meta.frameId) || meta.frameId <= 0 || !Number.isFinite(meta.capturedAt)) {
         return false;
       }
-      // Do not allow an older camera frame to overwrite a newer Sobel packet
+      // P1-01 (V8.7): Strictly monotonic camera Sobel frameId — reject equal & older frame IDs!
       if (
         this.sobelPacket?.inputSource === 'camera' &&
-        meta.frameId < this.sobelPacket.frameId
+        meta.frameId <= this.sobelPacket.frameId
       ) {
         return false;
       }

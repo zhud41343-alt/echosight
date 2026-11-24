@@ -7,16 +7,23 @@ outputs/paper_figure_preview.png (RGB | GT Depth | Pred Depth | 16x48 Acoustic M
 
 import time
 from pathlib import Path
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import torch
-
-from models.echo_depth_net import EchoDepthNet, FastDepthLite, count_parameters
-from train import SyntheticObstacleDepthDataset, compute_depth_metrics
 
 
-def benchmark_model(ckpt_path: Path, model_kind: str, device: torch.device):
+def _require_checkpoints(out_dir: Path):
+    required = ["fastdepth_lite.pt", "echodepth_no_edge.pt", "echodepth_best.pt"]
+    missing = [str(out_dir / name) for name in required if not (out_dir / name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"ERROR: Required trained checkpoints not found: {', '.join(missing)}. "
+            "Refusing to silently evaluate untrained random weights."
+        )
+
+
+def benchmark_model(ckpt_path: Path, model_kind: str, device):
+    import torch
+    from models.echo_depth_net import EchoDepthNet, FastDepthLite, count_parameters
+    from train import SyntheticObstacleDepthDataset, compute_depth_metrics
+
     if not ckpt_path.exists():
         raise FileNotFoundError(
             f"ERROR: Required trained checkpoint '{ckpt_path}' not found. "
@@ -80,8 +87,16 @@ def benchmark_model(ckpt_path: Path, model_kind: str, device: torch.device):
 
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_dir = Path("outputs")
+    # P0-3 (V8.7): Validate checkpoints BEFORE importing heavy PyTorch/Matplotlib deps
+    _require_checkpoints(out_dir)
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     fast_res = benchmark_model(out_dir / "fastdepth_lite.pt", model_kind="fastdepth", device=device)

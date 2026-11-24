@@ -12,8 +12,6 @@ P0-3 (V8.4):
 import argparse
 import hashlib
 from pathlib import Path
-import torch
-from models.echo_depth_net import EchoDepthNet
 
 
 def sha256_file(path: Path) -> str:
@@ -29,6 +27,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="outputs/echodepth_best.pt")
     parser.add_argument("--output", type=str, default="outputs/echodepth_net.onnx")
     parser.add_argument("--img-size", type=int, default=256)
+    parser.add_argument("--max-parity-diff", type=float, default=1e-3)
     parser.add_argument(
         "--allow-untrained-smoke-test",
         action="store_true",
@@ -36,15 +35,20 @@ def main():
     )
     args = parser.parse_args()
 
-    model = EchoDepthNet(pretrained_backbone=False, use_edge_fusion=True)
+    # P0-3 (V8.7): Fail-fast BEFORE importing heavy ML deps when trained checkpoint is missing
     ckpt_path = Path(args.checkpoint)
+    if not ckpt_path.exists() and not args.allow_untrained_smoke_test:
+        raise FileNotFoundError(
+            f"ERROR: Trained checkpoint not found at '{ckpt_path}'. "
+            "Refusing to export untrained random weights. Train first or pass --allow-untrained-smoke-test."
+        )
+
+    import torch
+    from models.echo_depth_net import EchoDepthNet
+
+    model = EchoDepthNet(pretrained_backbone=False, use_edge_fusion=True)
 
     if not ckpt_path.exists():
-        if not args.allow_untrained_smoke_test:
-            raise FileNotFoundError(
-                f"ERROR: Trained checkpoint not found at '{ckpt_path}'. "
-                "Refusing to export untrained random weights. Train first or pass --allow-untrained-smoke-test."
-            )
         print("[SMOKE TEST] Exporting untrained initialized architecture by explicit flag.")
         ckpt_sha = "N/A (untrained smoke test)"
     else:
@@ -95,6 +99,11 @@ def main():
 
     diff_d = float(np.max(np.abs(pt_d.numpy() - ort_d)))
     diff_a = float(np.max(np.abs(pt_a.numpy() - ort_a)))
+    if diff_d > args.max_parity_diff or diff_a > args.max_parity_diff:
+        raise ValueError(
+            f"ONNX parity check FAILED: diff_d={diff_d:.2e}, diff_a={diff_a:.2e} "
+            f"(tolerance={args.max_parity_diff:.2e})"
+        )
     print(f"ONNX Runtime parity verified! max_abs_diff(depth)={diff_d:.2e}, max_abs_diff(acoustic)={diff_a:.2e}")
 
 
