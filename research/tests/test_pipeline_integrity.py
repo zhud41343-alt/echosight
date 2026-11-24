@@ -11,6 +11,7 @@ Verifies:
 """
 
 import hashlib
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +20,15 @@ import onnxruntime as ort
 
 RESEARCH_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = RESEARCH_DIR.parent
-if str(RESEARCH_DIR) not in sys.path:
-    sys.path.insert(0, str(RESEARCH_DIR))
 
-from datasets.split_validator import validate_nyu_split_indices  # noqa: E402
+# Load split_validator.py directly without triggering datasets/__init__.py (which imports torch)
+_spec = importlib.util.spec_from_file_location(
+    "split_validator", RESEARCH_DIR / "datasets" / "split_validator.py"
+)
+assert _spec is not None and _spec.loader is not None
+_split_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_split_mod)
+validate_nyu_split_indices = _split_mod.validate_nyu_split_indices
 
 
 def test_export_fails_on_missing_checkpoint():
