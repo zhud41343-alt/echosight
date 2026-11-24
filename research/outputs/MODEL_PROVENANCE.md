@@ -24,4 +24,4 @@
 - **浏览器推理耗时说明**（单次前向推理，非端到端总延迟）：
   - 本地 Vite Dev Server（Windows 11 Chromium WASM，256×256）：实测 `51 ms`
   - 线上 GitHub Pages 生产构建（Windows 11 Chromium WASM，256×256）：实测 `44 ms`
-- **管道完整性测试**：`python research/tests/test_pipeline_integrity.py` → **3/3 通过**。
+- **管道完整性与哈希校验测试**：`python research/tests/test_pipeline_integrity.py` → **5/5 通过**（含 ONNX SHA-256 密码学一致性与 NYU `splits.mat` 校验）。

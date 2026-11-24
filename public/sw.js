@@ -1,9 +1,10 @@
-// EchoSight V7 Offline-First Service Worker
-// Caches the App Shell (same-origin JS/CSS/HTML) AND TensorFlow.js COCO-SSD model weights
-// so blind users can continue running local vision & 3D audio in subways, elevators, or airplane mode.
+// EchoSight V8.8 Offline-First Service Worker
+// Caches the App Shell (same-origin JS/CSS/HTML), TensorFlow.js COCO-SSD weights,
+// EchoDepthNet ONNX weights, and ONNX Runtime Web WASM binaries so blind users can
+// continue running local vision & 3D audio in subways, elevators, or airplane mode.
 
-const SHELL_CACHE = 'echosight-v7-shell';
-const MODEL_CACHE = 'echosight-v7-models';
+const SHELL_CACHE = 'echosight-v8-shell';
+const MODEL_CACHE = 'echosight-v8-models';
 const PRECACHE_URLS = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -36,10 +37,11 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // 1. Cache-First for TensorFlow.js COCO-SSD weights & self-trained EchoDepthNet ONNX weights
+  // 1. Cache-First for TensorFlow.js COCO-SSD weights, EchoDepthNet ONNX weights, and ORT WASM runtime
   const isModelAsset =
     (url.hostname === 'storage.googleapis.com' && url.pathname.includes('/tfjs-models/')) ||
-    (url.origin === self.location.origin && url.pathname.endsWith('.onnx'));
+    (url.origin === self.location.origin &&
+      (url.pathname.endsWith('.onnx') || url.pathname.endsWith('.wasm')));
   if (isModelAsset) {
     event.respondWith(
       caches.open(MODEL_CACHE).then(async (cache) => {
@@ -47,7 +49,7 @@ self.addEventListener('fetch', (event) => {
         if (cached) return cached;
         const fresh = await fetch(req);
         if (fresh && fresh.ok) {
-          cache.put(req, fresh.clone());
+          cache.put(req, fresh.clone()).catch(() => {});
         }
         return fresh;
       })
@@ -65,7 +67,7 @@ self.addEventListener('fetch', (event) => {
         .then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
-            caches.open(SHELL_CACHE).then((c) => c.put(req, copy));
+            caches.open(SHELL_CACHE).then((c) => c.put(req, copy).catch(() => {}));
           }
           return res;
         })
@@ -84,7 +86,7 @@ self.addEventListener('fetch', (event) => {
       const networkPromise = fetch(req)
         .then((res) => {
           if (res && res.ok) {
-            cache.put(req, res.clone());
+            cache.put(req, res.clone()).catch(() => {});
           }
           return res;
         })

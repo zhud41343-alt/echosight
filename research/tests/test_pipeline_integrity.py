@@ -1,12 +1,16 @@
 """
-P0-3 (V8.4) Integrity Tests for EchoDepthNet Training, Evaluation & ONNX Export Pipeline.
+V8.4–V8.8 Integrity & Provenance Tests for EchoDepthNet Pipeline.
 Verifies:
-1. export_onnx.py fails with non-zero exit code when checkpoint is missing (no silent random export).
-2. evaluate_ablation.py fails with non-zero exit code when checkpoints are missing.
+1. export_onnx.py fails fast with FileNotFoundError when checkpoint is missing.
+2. evaluate_ablation.py fails fast with FileNotFoundError when checkpoints are missing.
 3. Published public/models/echodepth_net.onnx loads in ONNX Runtime with exact output shapes
    (1, 1, 256, 256) and (1, 1, 16, 48) and 100% finite values in [0, 1].
+4. Cryptographic SHA-256 of public/models/echodepth_net.onnx matches MODEL_PROVENANCE.md.
+5. NYU Depth V2 splits.mat validator rejects empty, non-integer, duplicate, overlapping,
+   and out-of-bounds indices while accepting valid disjoint 1-based splits.
 """
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +19,10 @@ import onnxruntime as ort
 
 RESEARCH_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = RESEARCH_DIR.parent
+if str(RESEARCH_DIR) not in sys.path:
+    sys.path.insert(0, str(RESEARCH_DIR))
+
+from datasets.split_validator import validate_nyu_split_indices  # noqa: E402
 
 
 def test_export_fails_on_missing_checkpoint():
@@ -65,10 +73,65 @@ def test_published_onnx_shapes_and_finite_outputs():
     assert float(acoustic.min()) >= 0.0 and float(acoustic.max()) <= 1.0
 
 
+def test_published_onnx_sha256_matches_provenance():
+    onnx_path = REPO_ROOT / "public" / "models" / "echodepth_net.onnx"
+    prov_path = RESEARCH_DIR / "outputs" / "MODEL_PROVENANCE.md"
+    assert onnx_path.exists() and prov_path.exists()
+
+    actual_sha = hashlib.sha256(onnx_path.read_bytes()).hexdigest().upper()
+    prov_text = prov_path.read_text(encoding="utf-8")
+    assert actual_sha in prov_text, (
+        f"ONNX SHA-256 mismatch! Actual={actual_sha} not found in {prov_path}"
+    )
+
+
+def test_nyu_splits_validation():
+    # Valid 1-based MATLAB indices -> 0-based Python indices
+    tr, te = validate_nyu_split_indices(np.array([1, 2, 3]), np.array([4, 5]), total=5)
+    assert tr == [0, 1, 2] and te == [3, 4]
+
+    # Reject empty split
+    try:
+        validate_nyu_split_indices(np.array([]), np.array([1, 2]), total=5)
+        raise AssertionError("Should reject empty split")
+    except ValueError:
+        pass
+
+    # Reject non-integer split
+    try:
+        validate_nyu_split_indices(np.array([1.5, 2.0]), np.array([3, 4]), total=5)
+        raise AssertionError("Should reject non-integer split")
+    except ValueError:
+        pass
+
+    # Reject duplicate within split
+    try:
+        validate_nyu_split_indices(np.array([1, 1, 2]), np.array([3, 4]), total=5)
+        raise AssertionError("Should reject duplicate indices")
+    except ValueError:
+        pass
+
+    # Reject overlapping train/test split
+    try:
+        validate_nyu_split_indices(np.array([1, 2, 3]), np.array([3, 4]), total=5)
+        raise AssertionError("Should reject overlapping train/test")
+    except ValueError:
+        pass
+
+    # Reject out-of-bounds index (0 or > total in 1-based MATLAB)
+    try:
+        validate_nyu_split_indices(np.array([1, 2]), np.array([3, 6]), total=5)
+        raise AssertionError("Should reject out-of-bounds index")
+    except IndexError:
+        pass
+
+
 if __name__ == "__main__":
     import tempfile
     test_export_fails_on_missing_checkpoint()
     with tempfile.TemporaryDirectory() as td:
         test_evaluate_fails_on_missing_checkpoint(Path(td))
     test_published_onnx_shapes_and_finite_outputs()
-    print("ALL 3 RESEARCH PIPELINE INTEGRITY TESTS PASSED!")
+    test_published_onnx_sha256_matches_provenance()
+    test_nyu_splits_validation()
+    print("ALL 5 RESEARCH PIPELINE INTEGRITY TESTS PASSED!")

@@ -74,22 +74,12 @@ class NYUDepthV2MatDataset(Dataset):
                     "Refusing to silently fall back to non-official sequential split."
                 )
             import scipy.io as sio
+            from datasets.split_validator import validate_nyu_split_indices
+
             sp = sio.loadmat(sp_path)
-            raw_train = sp["trainNdxs"].reshape(-1)
-            raw_test = sp["testNdxs"].reshape(-1)
-            if not (np.all(np.mod(raw_train, 1) == 0) and np.all(np.mod(raw_test, 1) == 0)):
-                raise ValueError("Official splits.mat contains non-integer indices!")
-            train_idx = [int(i) - 1 for i in raw_train]
-            test_idx = [int(i) - 1 for i in raw_test]
-            if len(train_idx) == 0 or len(test_idx) == 0:
-                raise ValueError("Official splits.mat train/test split cannot be empty!")
-            if len(train_idx) != len(set(train_idx)) or len(test_idx) != len(set(test_idx)):
-                raise ValueError("Official splits.mat contains duplicate indices within a split!")
-            if set(train_idx) & set(test_idx):
-                raise ValueError("Official splits.mat contains overlapping train/test indices!")
-            # Validate bounds for BOTH train and test sets upfront
-            if any(i < 0 or i >= total for i in train_idx) or any(i < 0 or i >= total for i in test_idx):
-                raise IndexError(f"splits.mat index out of bounds for dataset size {total}")
+            train_idx, test_idx = validate_nyu_split_indices(
+                sp["trainNdxs"], sp["testNdxs"], total
+            )
             self.indices = train_idx if split == "train" else test_idx
             self.split_mode = "official_splits_mat"
         else:
