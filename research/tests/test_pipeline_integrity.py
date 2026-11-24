@@ -82,12 +82,18 @@ def test_published_onnx_shapes_and_finite_outputs():
 def test_published_onnx_sha256_matches_provenance():
     onnx_path = REPO_ROOT / "public" / "models" / "echodepth_net.onnx"
     prov_path = RESEARCH_DIR / "outputs" / "MODEL_PROVENANCE.md"
-    assert onnx_path.exists() and prov_path.exists()
+    onnx_ts_path = REPO_ROOT / "src" / "engine" / "echoDepthOnnx.ts"
+    assert onnx_path.exists() and prov_path.exists() and onnx_ts_path.exists()
 
     actual_sha = hashlib.sha256(onnx_path.read_bytes()).hexdigest().upper()
     prov_text = prov_path.read_text(encoding="utf-8")
     assert actual_sha in prov_text, (
         f"ONNX SHA-256 mismatch! Actual={actual_sha} not found in {prov_path}"
+    )
+    short_hash = actual_sha[:8].lower()
+    ts_text = onnx_ts_path.read_text(encoding="utf-8")
+    assert f"'{short_hash}'" in ts_text, (
+        f"Frontend ECHO_DEPTH_MODEL_SHA256_SHORT mismatch! Expected '{short_hash}' in {onnx_ts_path}"
     )
 
 
@@ -129,6 +135,23 @@ def test_nyu_splits_validation():
         validate_nyu_split_indices(np.array([1, 2]), np.array([3, 6]), total=5)
         raise AssertionError("Should reject out-of-bounds index")
     except IndexError:
+        pass
+
+    # P1-05 (V8.9): Reject incomplete partition coverage & non-795/654 official NYU counts
+    try:
+        validate_nyu_split_indices(np.array([1, 2]), np.array([3, 4]), total=5)
+        raise AssertionError("Should reject incomplete coverage")
+    except ValueError:
+        pass
+
+    tr_nyu, te_nyu = validate_nyu_split_indices(
+        np.arange(1, 796), np.arange(796, 1450), total=1449
+    )
+    assert len(tr_nyu) == 795 and len(te_nyu) == 654
+    try:
+        validate_nyu_split_indices(np.arange(1, 795), np.arange(795, 1450), total=1449)
+        raise AssertionError("Should reject wrong 794/655 NYU official split counts")
+    except ValueError:
         pass
 
 

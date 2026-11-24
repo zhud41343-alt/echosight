@@ -143,6 +143,19 @@ export const VisionScanner: React.FC = () => {
   const vfcHandleRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
   const cameraSessionRef = useRef<number>(0);
+  const assistSessionRef = useRef<number>(0);
+  const aiInFlightRef = useRef<boolean>(false);
+  const lastCommittedAiFrameIdRef = useRef<number>(0);
+  const aiPacketRef = useRef<{
+    sessionId: number;
+    inputSource: 'preset' | 'upload' | 'camera';
+    frameId: number;
+    capturedAt: number;
+    startedAt: number;
+    completedAt: number;
+    expiresAt: number;
+    detections: SpatialDetection[];
+  } | null>(null);
   const [activeAudioSource, setActiveAudioSource] = useState<ActiveAcousticSource>('sobel');
   const edgeImageRef = useRef<ImageData | null>(null);
   const scanColRef = useRef<number>(0);
@@ -159,6 +172,22 @@ export const VisionScanner: React.FC = () => {
       return age >= -50 && age <= 3000;
     },
     [cameraActive, cameraDisconnected]
+  );
+
+  // P0-01 & P0-02 (V8.9): Single unified PerceptionPacket validity gate for ALL AI speech & HUD readers
+  const getUsableAiDetections = useCallback(
+    (now: number): SpatialDetection[] | null => {
+      const pkt = aiPacketRef.current;
+      if (inputSource === 'camera') {
+        if (!isLiveCameraFrameFresh(now)) return null;
+        if (!pkt || pkt.inputSource !== 'camera') return null;
+        if (pkt.sessionId !== cameraSessionRef.current) return null;
+        if (now > pkt.expiresAt || now - pkt.capturedAt > 3000) return null;
+        return pkt.detections;
+      }
+      return pkt && pkt.inputSource === inputSource ? pkt.detections : detectionsRef.current;
+    },
+    [inputSource, isLiveCameraFrameFresh]
   );
 
   const recomputeCurrentFrame = useCallback(() => {
@@ -595,9 +624,10 @@ export const VisionScanner: React.FC = () => {
     };
   }, [viewMode, inputSource, preset, uploadVersion, cameraActive]);
 
-  // Run On-Device AI detection when enabled (P0-02 V8.7: strictly gated on live camera frame freshness)
+  // Run On-Device AI detection when enabled (P0-01 V8.9: PerceptionPacket-bound single-flight inference)
   useEffect(() => {
     if (!aiEnabled) {
+      aiPacketRef.current = null;
       detectionsRef.current = [];
       setDetections([]);
       return;
@@ -605,38 +635,79 @@ export const VisionScanner: React.FC = () => {
 
     let cancelled = false;
     const runDetect = async () => {
+      if (aiInFlightRef.current) return;
       const srcCanvas = sourceCanvasRef.current;
       if (!srcCanvas) return;
-      const now = performance.now();
+      const startedAt = performance.now();
+      const mySession = cameraSessionRef.current;
+      let frameId = 0;
+      let capturedAt = startedAt;
 
-      // P0-02 (V8.7): When using live camera, block AI, 3D finder beacon & auto-speech on frozen/stale/disconnected frames!
+      // P0-01 (V8.9): Snapshot the EXACT frame identity (sessionId, frameId, capturedAt) BEFORE inference
       if (inputSource === 'camera') {
-        if (!isLiveCameraFrameFresh(now)) {
+        if (!isLiveCameraFrameFresh(startedAt)) {
+          aiPacketRef.current = null;
           detectionsRef.current = [];
           setDetections([]);
           return;
         }
         const snap = cameraFrameTrackerRef.current.getSnapshot();
-        if (snap.latestFrameId <= lastAiCameraFrameIdRef.current) {
+        if (
+          snap.latestFrameCapturedAt === null ||
+          snap.latestFrameId <= lastAiCameraFrameIdRef.current
+        ) {
           return;
         }
-        lastAiCameraFrameIdRef.current = snap.latestFrameId;
+        frameId = snap.latestFrameId;
+        capturedAt = snap.latestFrameCapturedAt;
+        lastAiCameraFrameIdRef.current = frameId;
       }
 
-      const isProcedural = inputSource === 'preset';
-      const res = await detectSpatialObjects(srcCanvas, isProcedural, preset);
-      if (!cancelled) {
-        if (inputSource === 'camera' && !isLiveCameraFrameFresh(performance.now())) {
-          detectionsRef.current = [];
-          setDetections([]);
-          return;
+      aiInFlightRef.current = true;
+      try {
+        const isProcedural = inputSource === 'preset';
+        const res = await detectSpatialObjects(srcCanvas, isProcedural, preset);
+        const completedAt = performance.now();
+        if (cancelled) return;
+
+        if (inputSource === 'camera') {
+          const pageHidden = typeof document !== 'undefined' && document.hidden;
+          const ownFrameAge = completedAt - capturedAt;
+          // Reject stale session, hidden page, own-frame TTL expiry, or out-of-order late commit
+          if (
+            pageHidden ||
+            mySession !== cameraSessionRef.current ||
+            !cameraActive ||
+            cameraDisconnected ||
+            ownFrameAge > 3000 ||
+            frameId <= lastCommittedAiFrameIdRef.current
+          ) {
+            if (ownFrameAge > 3000 || !isLiveCameraFrameFresh(completedAt)) {
+              aiPacketRef.current = null;
+              detectionsRef.current = [];
+              setDetections([]);
+            }
+            return;
+          }
+          lastCommittedAiFrameIdRef.current = frameId;
         }
+
+        aiPacketRef.current = {
+          sessionId: mySession,
+          inputSource,
+          frameId,
+          capturedAt,
+          startedAt,
+          completedAt,
+          expiresAt: inputSource === 'camera' ? capturedAt + 3000 : Number.POSITIVE_INFINITY,
+          detections: res,
+        };
         detectionsRef.current = res;
         setDetections(res);
 
         // 3D Item-Finder Beacon: ping in 3D space when the target item is spotted
         const target = finderTargetRef.current;
-        if (target) {
+        if (target && volume > 0.001) {
           const hit = res.find(
             (d) => d.labelEn === target || (target === 'cup' && d.labelEn === 'bottle')
           );
@@ -646,9 +717,8 @@ export const VisionScanner: React.FC = () => {
             const centeredness = 1 - Math.abs(normX - 0.5) * 2; // 0..1
             const distBoost = hit.distance === '近距离' ? 0.35 : hit.distance === '中距离' ? 0.15 : 0;
             const closeness = Math.min(1, centeredness * 0.65 + distBoost);
-            const tNow = performance.now();
-            if (tNow - lastFinderPingRef.current > 750) {
-              lastFinderPingRef.current = tNow;
+            if (completedAt - lastFinderPingRef.current > 750) {
+              lastFinderPingRef.current = completedAt;
               spatialAudio.playFinderBeacon(normX, closeness, volume);
             }
           }
@@ -659,6 +729,8 @@ export const VisionScanner: React.FC = () => {
           const hasDenseObstacle = m.centerDensity > 42 || m.leftDensity > 48 || m.rightDensity > 48;
           speakSpatialDetections(res, false, hasDenseObstacle ? m.navigationCue : undefined);
         }
+      } finally {
+        aiInFlightRef.current = false;
       }
     };
 
@@ -668,14 +740,16 @@ export const VisionScanner: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [aiEnabled, cameraActive, preset, inputSource, uploadVersion, autoSpeakAI, isLiveCameraFrameFresh, volume]);
+  }, [aiEnabled, cameraActive, cameraDisconnected, preset, inputSource, uploadVersion, autoSpeakAI, isLiveCameraFrameFresh, volume]);
 
   const announceSceneNow = useCallback(() => {
-    if (inputSource === 'camera' && !isLiveCameraFrameFresh(performance.now())) {
-      speakCue('摄像头画面已冻结或断开，实时感知不可用，请重新连接摄像头后再查询。');
+    const now = performance.now();
+    const usable = getUsableAiDetections(now);
+    if (inputSource === 'camera' && usable === null) {
+      speakCue('摄像头画面已冻结、过期或断开，实时感知不可用，请重新连接摄像头后再查询。');
       return;
     }
-    const dets = detectionsRef.current;
+    const dets = usable ?? [];
     const m = metricsRef.current;
     if (dets.length > 0) {
       speakSpatialDetections(dets, true, m.navigationCue);
@@ -684,7 +758,7 @@ export const VisionScanner: React.FC = () => {
         `${m.navigationCue}。左侧障碍密度${m.leftDensity}%，正前方${m.centerDensity}%，右侧${m.rightDensity}%。`
       );
     }
-  }, [inputSource, isLiveCameraFrameFresh]);
+  }, [getUsableAiDetections, inputSource]);
 
   const runLightAndColorCheck = useCallback(() => {
     if (inputSource === 'camera' && !isLiveCameraFrameFresh(performance.now())) {
@@ -846,13 +920,17 @@ export const VisionScanner: React.FC = () => {
 
     probePointRef.current = { x: normX * CANVAS_W, y: normY * CANVAS_H, at: performance.now() };
 
+    // P1-04 (V8.9): Respect mute (volume === 0) and block perception probe tones when live matrix is invalid/expired
+    if (volume <= 0.001) return;
+    if (!activeMat && (inputSource === 'camera' || viewMode === 'depth')) return;
+
     const now = performance.now();
     if (forceSound || now - lastProbeSoundRef.current > 65) {
       lastProbeSoundRef.current = now;
       const info = spatialAudio.playBrushTone(normX, normY, {
         scaleMode,
         useHRTF,
-        volume: Math.max(0.25, volume * (0.4 + (energyPct / 100) * 0.7)),
+        volume: Math.min(1, volume * (0.4 + (energyPct / 100) * 0.7)),
       });
       setProbeHud({ ...info, energyPct });
     }
@@ -861,9 +939,17 @@ export const VisionScanner: React.FC = () => {
   const toggleBlindAssistMode = async () => {
     spatialAudio.ensureContext();
     if (assistMode) {
+      // P1-01 (V8.9): Synchronously cancel any pending AI model load or getUserMedia request on exit
+      assistSessionRef.current += 1;
+      cameraSessionRef.current += 1;
+      cameraStartingRef.current = false;
+      aiPacketRef.current = null;
+      lastCommittedAiFrameIdRef.current = 0;
       setAssistMode(false);
       setAutoSpeakAI(false);
       setIsScanning(false);
+      stopCameraFrameWatcher();
+      spatialAudio.stopAllImmediate();
       if (cameraActive && videoRef.current?.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
         videoRef.current.srcObject = null;
@@ -874,6 +960,7 @@ export const VisionScanner: React.FC = () => {
       return;
     }
 
+    const myAssistSession = ++assistSessionRef.current;
     setAssistMode(true);
     setAutoSpeakAI(true);
     setVolume((v) => (v < 0.2 ? 0.55 : v));
@@ -884,8 +971,11 @@ export const VisionScanner: React.FC = () => {
       setAiLoading(true);
       const { ready } = await loadOnDeviceAIModel((msg) => setAiStatus(msg));
       setAiLoading(false);
+      if (assistSessionRef.current !== myAssistSession) return;
       if (ready) setAiEnabled(true);
     }
+
+    if (assistSessionRef.current !== myAssistSession) return;
 
     // 2. Try enabling live camera; if unavailable, seamlessly keep current scene
     if (!cameraActive && !cameraStartingRef.current) {
@@ -911,6 +1001,8 @@ export const VisionScanner: React.FC = () => {
             routerRef.current.invalidateSobel();
             routerRef.current.invalidateNeural();
             spatialAudio.stopAllImmediate();
+            aiPacketRef.current = null;
+            lastCommittedAiFrameIdRef.current = 0;
             detectionsRef.current = [];
             setDetections([]);
             setIsScanning(false);
@@ -945,6 +1037,7 @@ export const VisionScanner: React.FC = () => {
       }
     }
 
+    if (assistSessionRef.current !== myAssistSession) return;
     setIsScanning(true);
   };
 
@@ -988,10 +1081,17 @@ export const VisionScanner: React.FC = () => {
       return;
     }
 
-    // P1-04 (V8.7): Prevent concurrent getUserMedia races & guarantee track cleanup on cancel/error
-    if (cameraStartingRef.current) return;
+    // P1-01 (V8.9): Clicking while STARTING explicitly cancels the pending getUserMedia request!
+    if (cameraStartingRef.current) {
+      cameraSessionRef.current += 1;
+      cameraStartingRef.current = false;
+      setCameraError('已取消摄像头启动请求。');
+      return;
+    }
     cameraStartingRef.current = true;
     const myCamSession = ++cameraSessionRef.current;
+    aiPacketRef.current = null;
+    lastCommittedAiFrameIdRef.current = 0;
     let acquiredStream: MediaStream | null = null;
     try {
       acquiredStream = await navigator.mediaDevices.getUserMedia({
@@ -1345,7 +1445,7 @@ export const VisionScanner: React.FC = () => {
                 {detections.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => speakSpatialDetections(detections, true)}
+                    onClick={announceSceneNow}
                     className="btn btn-sm"
                   >
                     <Volume2 className="h-3.5 w-3.5" />

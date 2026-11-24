@@ -12,9 +12,12 @@ def validate_nyu_split_indices(
     raw_train: np.ndarray,
     raw_test: np.ndarray,
     total: int,
+    require_complete_coverage: bool = True,
 ) -> Tuple[List[int], List[int]]:
     """
     Validates 1-based MATLAB train/test split indices against dataset size `total`.
+    When `require_complete_coverage=True`, enforces full partition coverage (and exact
+    795/654 official counts when `total == 1449`).
     Returns 0-based `(train_idx, test_idx)` or raises ValueError / IndexError.
     """
     flat_train = np.asarray(raw_train).reshape(-1)
@@ -42,5 +45,15 @@ def validate_nyu_split_indices(
 
     if any(i < 0 or i >= total for i in train_idx) or any(i < 0 or i >= total for i in test_idx):
         raise IndexError(f"splits.mat index out of bounds for dataset size {total}")
+
+    if require_complete_coverage:
+        if len(train_idx) + len(test_idx) != total:
+            raise ValueError(
+                f"Incomplete split coverage: train({len(train_idx)}) + test({len(test_idx)}) != total({total})"
+            )
+        if total == 1449 and (len(train_idx) != 795 or len(test_idx) != 654):
+            raise ValueError(
+                f"Official NYU Depth V2 split must be 795/654, got {len(train_idx)}/{len(test_idx)}"
+            )
 
     return train_idx, test_idx

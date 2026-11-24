@@ -66,6 +66,8 @@ def main():
     dummy = torch.randn(1, 3, args.img_size, args.img_size)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # P1-06 (V8.9): Atomic export — write to temp file, verify shapes/finite/parity, then os.replace
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
 
     export_kwargs = dict(
         opset_version=17,
@@ -73,37 +75,45 @@ def main():
         output_names=["depth_map", "acoustic_matrix"],
     )
     try:
-        torch.onnx.export(model, dummy, str(out_path), dynamo=False, **export_kwargs)
-    except TypeError:
-        torch.onnx.export(model, dummy, str(out_path), **export_kwargs)
+        try:
+            torch.onnx.export(model, dummy, str(tmp_path), dynamo=False, **export_kwargs)
+        except TypeError:
+            torch.onnx.export(model, dummy, str(tmp_path), **export_kwargs)
+
+        # Verify numerical parity, output dimensions, and finite values with ONNX Runtime BEFORE replacing target
+        import numpy as np
+        import onnxruntime as ort
+
+        with torch.no_grad():
+            pt_d, pt_a = model(dummy)
+        sess = ort.InferenceSession(str(tmp_path), providers=["CPUExecutionProvider"])
+        ort_d, ort_a = sess.run(None, {"rgb_image": dummy.numpy()})
+
+        if ort_d.shape != (1, 1, args.img_size, args.img_size) or ort_a.shape != (1, 1, 16, 48):
+            raise ValueError(f"Unexpected ONNX output shapes: depth={ort_d.shape}, acoustic={ort_a.shape}")
+        if not (np.all(np.isfinite(ort_d)) and np.all(np.isfinite(ort_a))):
+            raise ValueError("ONNX output contains NaN or Infinity!")
+
+        diff_d = float(np.max(np.abs(pt_d.numpy() - ort_d)))
+        diff_a = float(np.max(np.abs(pt_a.numpy() - ort_a)))
+        if diff_d > args.max_parity_diff or diff_a > args.max_parity_diff:
+            raise ValueError(
+                f"ONNX parity check FAILED: diff_d={diff_d:.2e}, diff_a={diff_a:.2e} "
+                f"(tolerance={args.max_parity_diff:.2e})"
+            )
+
+        import os
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
     onnx_sha = sha256_file(out_path)
     print(
-        f"Exported ONNX model successfully to {out_path} "
+        f"Exported and verified ONNX model atomically to {out_path} "
         f"({out_path.stat().st_size / 1e6:.2f} MB, SHA-256={onnx_sha[:16]}...)"
     )
-
-    # Verify numerical parity, output dimensions, and finite values with ONNX Runtime
-    import numpy as np
-    import onnxruntime as ort
-
-    with torch.no_grad():
-        pt_d, pt_a = model(dummy)
-    sess = ort.InferenceSession(str(out_path), providers=["CPUExecutionProvider"])
-    ort_d, ort_a = sess.run(None, {"rgb_image": dummy.numpy()})
-
-    if ort_d.shape != (1, 1, args.img_size, args.img_size) or ort_a.shape != (1, 1, 16, 48):
-        raise ValueError(f"Unexpected ONNX output shapes: depth={ort_d.shape}, acoustic={ort_a.shape}")
-    if not (np.all(np.isfinite(ort_d)) and np.all(np.isfinite(ort_a))):
-        raise ValueError("ONNX output contains NaN or Infinity!")
-
-    diff_d = float(np.max(np.abs(pt_d.numpy() - ort_d)))
-    diff_a = float(np.max(np.abs(pt_a.numpy() - ort_a)))
-    if diff_d > args.max_parity_diff or diff_a > args.max_parity_diff:
-        raise ValueError(
-            f"ONNX parity check FAILED: diff_d={diff_d:.2e}, diff_a={diff_a:.2e} "
-            f"(tolerance={args.max_parity_diff:.2e})"
-        )
     print(f"ONNX Runtime parity verified! max_abs_diff(depth)={diff_d:.2e}, max_abs_diff(acoustic)={diff_a:.2e}")
 
 

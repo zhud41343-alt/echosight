@@ -1,11 +1,13 @@
 // EchoDepthNet Browser ONNX Runtime Engine (Front-End <-> PyTorch Research Unification)
-// Dynamically loads `onnxruntime-web` and our self-trained 1.11M EchoDepthNet (+Residual FG-EDFM)
+// Dynamically loads `onnxruntime-web` and our self-trained 1.11M EchoDepthNet (+Residual EG-DFM)
 // checkpoint (`./models/echodepth_net.onnx`) to predict:
 //   1) Dense normalized proximity depth map (rendered as Inferno heatmap)
 //   2) 48x16 Acoustic Spatial Hazard Matrix aligned directly with EchoSight's 3D HRTF engine
 
 const MODEL_INPUT_SIZE = 256;
-const MODEL_URL = './models/echodepth_net.onnx';
+// P1-02 (V8.9): SHA-256 short-hash query parameter prevents stale Cache-First SW weight collisions across releases
+export const ECHO_DEPTH_MODEL_SHA256_SHORT = '95ebf7fa';
+const MODEL_URL = `./models/echodepth_net.onnx?v=${ECHO_DEPTH_MODEL_SHA256_SHORT}`;
 export const ECHO_DEPTH_MODEL_VERSION = 'EchoDepthNet-ResidualEGDFM-1.11M';
 
 type OrtModule = typeof import('onnxruntime-web');
