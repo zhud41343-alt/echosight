@@ -3,7 +3,7 @@
 - **测试时间**：2026-11-21
 - **测试分支**：`main`（演进轨迹：V1 `fd1d425` → V2 `4531763` → V3 `dc58a2c` → V4 `994e537` → V5 `970e5ec` → V6 `5ef099d` → V7 `f3846a6` → V8）
 - **测试环境**：Windows 11 + Vite Dev Server (`http://localhost:5173/`) + 真实内置 Chromium 浏览器
-- **自动化单元测试命令**：`npm test`（Vitest v5.1.1）→ **9/9 测试文件、45/45 项用例通过**；`python research/tests/test_pipeline_integrity.py` → **3/3 通过**；`python research/check_claim_consistency.py` → **通过**
+- **自动化单元测试命令**：`npm test`（Vitest v5.1.1）→ **10/10 测试文件、49/49 项用例通过**；`python research/tests/test_pipeline_integrity.py` → **5/5 通过**；`python research/check_claim_consistency.py` → **通过**
 - **生产构建命令**：`npm run build`（`tsc -b && vite build`）→ **0 错误**（含 `dist/sw.js` 离线 Service Worker 与 `dist/models/echodepth_net.onnx`）
 
 ## 1. V8 真实浏览器回归实测记录

@@ -1,0 +1,8 @@
+﻿evidence,result,command,status
+Vitest unit tests,49/49 passed,npm test,verified_local
+Research pipeline integrity,5/5 passed,python research/tests/test_pipeline_integrity.py,verified_local
+Production build,success,npm run build,verified_local
+ONNX model,4.46 MB present,dist/models/echodepth_net.onnx,verified_local
+Real phone screen-reader flow,pending,iOS VoiceOver / Android TalkBack,requires_field_test
+Real distance MAE/P90,pending,0.5–10 m tape-measure protocol,requires_field_test
+Visually impaired co-creation,pending,approved controlled study protocol,requires_ethics_and_field_test

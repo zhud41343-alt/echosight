@@ -1,0 +1,9 @@
+{
+  "package": "EchoSight competition data package",
+  "created_from": "D:/听见光影/research/outputs/ablation_report.md",
+  "synthetic_scene_count": 64,
+  "model_metric_rows": 3,
+  "verified_engineering_checks": 4,
+  "pending_real_world_checks": 3,
+  "usage_rule": "Synthetic rows support demos and reproducibility. They must not be described as real-world measurements."
+}

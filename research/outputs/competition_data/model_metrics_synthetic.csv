@@ -1,0 +1,4 @@
+﻿model,parameters_m,abs_rel,rmse,delta1,acoustic_rmse,fps_cpu,source
+FastDepth-Lite,1.02,0.0706,0.0798,0.9047,0.0562,88.2,"64-scene synthetic validation, seed=999"
+EchoDepthNet Baseline,1.08,0.071,0.0872,0.8864,0.0583,94.1,"64-scene synthetic validation, seed=999"
+EchoDepthNet + Residual EG-DFM,1.11,0.0754,0.0824,0.897,0.0577,74.2,"64-scene synthetic validation, seed=999"
