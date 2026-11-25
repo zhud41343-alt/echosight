@@ -1,7 +1,7 @@
 # 【Hack4Good｜技术向善】听见光影 EchoSight：基于 EchoSafe 可靠性状态机与可控 3D 空间声场的视障辅助感知原型
 
-> 正式公网体验链接（Qoder Sites）：[替换为你的 https://xxx.qoder.zone 链接]（公开访问、无需登录，建议佩戴开放式/骨传导耳机体验 3D 空间声场）
-> 使用的 Qoder 账号 / UID：[替换为你的 Qoder 账号或 UID，在 https://qoder.cn/account/profile 查看]
+> 正式公网体验链接（Qoder Sites）：https://echo-sight-avy4cqpkzh8.qoder.zone （公开访问、无需登录，建议佩戴开放式/骨传导耳机体验 3D 空间声场）
+> 使用的 Qoder 账号 / UID：1984046498114303
 > 开源代码仓库（GitHub）：https://github.com/zhud41343-alt/echosight
 > 备用公网体验（GitHub Pages）：https://zhud41343-alt.github.io/echosight/
 > 参赛赛道：2026 Qoder 高校创造力大赛 · Hack4Good（技术向善赛道）
